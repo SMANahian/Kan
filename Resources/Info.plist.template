@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Kan.app's Info.plist. scripts/build-app.sh replaces @KAN_VERSION@ (KAN_VERSION, a VERSION file or
+  KanVersion.current) and @KAN_BUILD_NUMBER@ (KAN_BUILD_NUMBER, default yyyyMMdd.HHmmss), then
+  normalizes the result with plutil, which also drops this comment.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Kan</string>
+	<key>CFBundleExecutable</key>
+	<string>KanApp</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.nahian.Kan</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Kan</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@KAN_VERSION@</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleVersion</key>
+	<string>@KAN_BUILD_NUMBER@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Nahian. Records and transcribes calls on this Mac.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSSupportsSuddenTermination</key>
+	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Kan records your microphone during calls so it can write down what you said. Kan never uploads your recordings or transcripts.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Kan records the sound of your call app (Zoom, Google Meet, Telegram…) so it can transcribe what the other people say. The audio is transcribed and stored only on this Mac.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Kan asks Chrome, Safari and similar browsers for the title and address of your meeting tab, so it can recognise Google Meet, Teams or Zoom calls and name the recording. Nothing else is read, and nothing leaves this Mac.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Kan saves your call transcripts (Markdown and JSON files) in its library folder, Documents › Kan unless you choose another one, so you and your AI agents can read and search them.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Kan looks up the calendar event you're in when a call starts, to suggest a title and the attendees' names for the recording. Your calendar never leaves this Mac.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Kan looks up the calendar event you're in when a call starts, to suggest a title and the attendees' names for the recording. Your calendar never leaves this Mac.</string>
+</dict>
+</plist>

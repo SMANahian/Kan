@@ -1,0 +1,13 @@
+.build/
+build/
+Vendor/whisper/lib/
+Vendor/whisper.cpp/
+*.xcodeproj/
+.swiftpm/
+.DS_Store
+*.log
+
+# Leftovers of interrupted build scripts (scripts/bootstrap-whisper.sh, scripts/make-icon.swift)
+Vendor/whisper.cpp.partial/
+Vendor/whisper/lib.*/
+*.iconset/
