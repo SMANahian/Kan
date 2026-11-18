@@ -47,11 +47,12 @@ enum MCPTools {
         description: """
             List the user's recorded calls, newest first, with optional filters. Returns for each call: id, title, \
             folder, tags, started_at / ended_at (ISO-8601 with the call's UTC offset), time_zone, duration_seconds, \
-            app, people (named speakers; the user is usually first), languages ("bn" Bangla, "en" English), status \
-            and a preview. Page with offset; next_offset is null on the last page. Use search_transcripts to find \
-            what was said, get_transcript to read a call.
+            app, people (named speakers; the user is usually first), languages ("bn" Bangla, "en" English), status, \
+            has_summary (an AI summary exists; get_call returns it) and a preview (the user's notes, else the \
+            summary, else the first words). Page with offset; next_offset is null on the last page. Use \
+            search_transcripts to find what was said, get_transcript to read a call.
             """,
-        properties: [("query", Schema.string("Only calls containing all these words (title, tags, notes, bookmarks or transcript; Bangla or English). Quote a phrase to match it exactly."))]
+        properties: [("query", Schema.string("Only calls containing all these words (title, tags, notes, bookmarks, summary or transcript; Bangla or English). Quote a phrase to match it exactly."))]
             + filterProperties + [
                 ("status", Schema.string("Only calls with this status.", options: ["ready", "processing", "queued", "recording", "failed"])),
                 ("limit", Schema.integer("Calls per page.", minimum: 1, maximum: 200, defaultValue: 20)),
@@ -87,13 +88,14 @@ enum MCPTools {
     static let searchTranscripts = MCPTool(
         name: "search_transcripts", title: "Search transcripts",
         description: """
-            Find passages in the user's calls: transcripts, titles, tags, notes and bookmarks. Every word must occur \
-            somewhere in the call; quote a phrase ("data augmentation") to match it exactly. Case-insensitive; Bangla \
-            matches as written (vowel signs count, "ভাষা" also finds "ভাষার"); English terms are often spoken in \
-            Bengali script ("মডেল", "ডেটাসেট"), so try both spellings. Returns passages, best call first: call_id, \
-            title, started_at, time_zone, field, time_seconds + timestamp ("hh:mm:ss" from the call's start), at \
-            (absolute time), speaker and a ~200-character snippet. Read around a passage with get_transcript \
-            (from_seconds a little before time_seconds).
+            Find passages in the user's calls: transcripts, titles, tags, notes, bookmarks and AI summaries. Every \
+            word must occur somewhere in the call; quote a phrase ("data augmentation") to match it exactly. \
+            Case-insensitive; Bangla matches as written (vowel signs count, "ভাষা" also finds "ভাষার"); English terms \
+            are often spoken in Bengali script ("মডেল", "ডেটাসেট"), so try both spellings. Returns passages, best \
+            call first: call_id, title, started_at, time_zone, field (title, tags, notes, bookmark, summary or \
+            transcript), time_seconds + timestamp ("hh:mm:ss" from the call's start; transcript and bookmark \
+            passages), at (absolute time), speaker and a ~200-character snippet. Read around a passage with \
+            get_transcript (from_seconds a little before time_seconds).
             """,
         properties: [("query", Schema.string("Words or \"quoted phrases\" to find (Bangla or English)."))]
             + filterProperties + [
@@ -125,7 +127,11 @@ enum MCPTools {
         description: """
             Everything about one call except its transcript: title, folder, tags, the user's notes, bookmarks \
             (moments the user marked, with timestamps), speakers (id "me" / is_me = the user; "Speaker N" = not \
-            named yet), times, app, meeting link, languages, status and file paths. Use get_transcript for the words.
+            named yet), times, app, meeting link, languages, status and file paths. When Kan's optional OpenAI \
+            features wrote them, also ai_summary (overview, key_points, ideas, decisions, action_items, \
+            open_questions, model, generated_at; transcript_changed = written from an earlier version of the \
+            transcript) and title_ideas. Summaries are AI-written and can contain mistakes: check facts in the \
+            transcript. Use get_transcript for the words.
             """,
         properties: [callID],
         required: ["call_id"],
@@ -145,9 +151,10 @@ enum MCPTools {
             Read a call's transcript, paged by segments (default \(defaultTranscriptPage) per page; follow next_offset \
             until it is null). Optionally only the part between from_seconds and to_seconds (seconds from the \
             call's start, e.g. from search results' time_seconds). Formats: "markdown" (speaker turns with \
-            [hh:mm:ss]), "text" ("[hh:mm:ss] Name: words" lines) or "json" (segments with start/end, speaker id, \
-            language, text). The speaker with is_me / id "me" is the user. Text mixes Bangla and English and is \
-            machine-transcribed: names and jargon may be misheard.
+            [hh:mm:ss]; the first page of a whole call starts with its AI summary, if it has one), "text" \
+            ("[hh:mm:ss] Name: words" lines) or "json" (segments with start/end, speaker id, language, text). The \
+            speaker with is_me / id "me" is the user. Text mixes Bangla and English and is machine-transcribed: \
+            names and jargon may be misheard.
             """,
         properties: [
             callID,
@@ -283,9 +290,9 @@ enum MCPTools {
     static let exportCall = MCPTool(
         name: "export_call", title: "Export a call",
         description: """
-            One whole call as a document: "markdown" (the library's .md: front matter, notes, bookmarks, transcript), \
-            "text", "json" (the full call record, the source of truth), "srt" or "vtt" (subtitles). Long calls are \
-            large; to read a transcript in parts use get_transcript.
+            One whole call as a document: "markdown" (the library's .md: front matter, AI summary if any, notes, \
+            bookmarks, transcript), "text", "json" (the full call record, the source of truth), "srt" or "vtt" \
+            (subtitles). Long calls are large; to read a transcript in parts use get_transcript.
             """,
         properties: [
             callID,

@@ -21,6 +21,9 @@ final class FloatingPanel: NSPanel {
         isOpaque = false
         hasShadow = true
         animationBehavior = .utilityWindow
+        // Kan stays inactive while a panel floats over the call app: without this AppKit shows
+        // no `.help` tooltips in it.
+        allowsToolTipsWhenApplicationIsInactive = true
         contentView = content
     }
 

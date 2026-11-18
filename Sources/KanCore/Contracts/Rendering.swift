@@ -30,18 +30,26 @@ public struct RenderOptions: Sendable, Equatable {
     public var includeFrontMatter: Bool
     public var includeNotes: Bool
     public var includeBookmarks: Bool
+    /// The summary OpenAI wrote (`CallRecord.ai.summary`), when the call has one.
+    public var includeSummary: Bool
     /// Merge consecutive segments of the same speaker into one paragraph (gap < 2 s, < ~90 s total).
     public var mergeConsecutive: Bool
     /// Omit segments flagged `.echoSuspect`.
     public var hideEchoSuspects: Bool
+    /// The note in place of (or above) the transcript while a call is recorded or transcribed, or
+    /// after transcription failed ("Transcript is being generated…").
+    public var includeStatusNote: Bool
 
     public init(includeFrontMatter: Bool = true, includeNotes: Bool = true, includeBookmarks: Bool = true,
-                mergeConsecutive: Bool = true, hideEchoSuspects: Bool = true) {
+                includeSummary: Bool = true, mergeConsecutive: Bool = true, hideEchoSuspects: Bool = true,
+                includeStatusNote: Bool = true) {
         self.includeFrontMatter = includeFrontMatter
         self.includeNotes = includeNotes
         self.includeBookmarks = includeBookmarks
+        self.includeSummary = includeSummary
         self.mergeConsecutive = mergeConsecutive
         self.hideEchoSuspects = hideEchoSuspects
+        self.includeStatusNote = includeStatusNote
     }
 }
 
@@ -68,6 +76,7 @@ public struct RenderOptions: Sendable, Equatable {
 ///     # Advisor meeting – augmentation idea
 ///     Fri 14 Nov 2026, 10:00–10:42 · Zoom · 42 min · Nahian (me), Prof. Rahman
 ///
+///     ## Summary          (only if OpenAI wrote one; see `summaryMarkdown`)
 ///     ## Notes            (only if non-empty)
 ///     ## Bookmarks        (only if any)  - [00:12:31] note
 ///     ## Transcript
@@ -96,6 +105,9 @@ public enum TranscriptRenderer {
         out += "# " + TranscriptLayout.escapeParagraphStart(title.isEmpty ? suggestedTitle(for: record) : title) + "\n"
         out += TranscriptLayout.headerLine(record) + "\n"
 
+        if options.includeSummary, let summary = summaryMarkdown(record) {
+            out += "\n" + summary
+        }
         let notes = record.notes.nfc.trimmingCharacters(in: .whitespacesAndNewlines)
         if options.includeNotes && !notes.isEmpty {
             out += "\n## Notes\n" + notes + "\n"
@@ -110,7 +122,7 @@ public enum TranscriptRenderer {
 
         out += "\n## Transcript\n"
         let blocks = TranscriptLayout.blocks(record, options: options)
-        if let note = TranscriptLayout.statusNote(record, hasTranscript: !blocks.isEmpty) {
+        if options.includeStatusNote, let note = TranscriptLayout.statusNote(record, hasTranscript: !blocks.isEmpty) {
             out += "_" + TranscriptLayout.escapeInline(note) + "_\n"
             if !blocks.isEmpty { out += "\n" }
         }
@@ -123,12 +135,15 @@ public enum TranscriptRenderer {
 
     /// "[00:00:05] Nahian: So I was thinking…" lines with a short header.
     ///
-    /// `includeFrontMatter` controls the header (title + date line); with it, notes and bookmarks
-    /// turned off, the result is just the transcript lines (what `{{transcript}}` uses).
+    /// `includeFrontMatter` controls the header (title + date line); with it, the summary, notes
+    /// and bookmarks turned off, the result is just the transcript lines (what `{{transcript}}` uses).
     public static func plainText(_ record: CallRecord, options: RenderOptions = RenderOptions()) -> String {
         var sections: [String] = []
         if options.includeFrontMatter {
             sections.append(record.title.singleLine + "\n" + TranscriptLayout.headerLine(record))
+        }
+        if options.includeSummary, let summary = summaryText(record) {
+            sections.append(summary)
         }
         let notes = record.notes.nfc.trimmingCharacters(in: .whitespacesAndNewlines)
         if options.includeNotes && !notes.isEmpty {
@@ -144,6 +159,23 @@ public enum TranscriptRenderer {
         let transcript = transcriptLines(record, options: options)
         sections.append(sections.isEmpty ? transcript : "Transcript:\n" + transcript)
         return sections.joined(separator: "\n\n") + "\n"
+    }
+
+    /// The Markdown's "## Summary" section, nil when the call has no summary: the overview, then
+    /// "### Key points", "### Ideas", "### Decisions", "### Action items" and "### Open questions"
+    /// (lists with items only), then "_Summary written by OpenAI (model) on 17 Nov 2026; it can
+    /// contain mistakes._" and, when they apply, notes that the call was too long to send whole
+    /// and that the transcript changed since. OpenAI's text is escaped like the user's, so it can't
+    /// start a heading, list, quote, HTML block or code fence; list items are single lines.
+    public static func summaryMarkdown(_ record: CallRecord) -> String? {
+        guard let summary = SummaryLayout(record) else { return nil }
+        var blocks = summary.overview.map(TranscriptLayout.escapeAIText)
+        for list in summary.lists {
+            let items = list.items.map { "- " + TranscriptLayout.escapeAIText($0) }
+            blocks.append("### \(list.heading)\n" + items.joined(separator: "\n"))
+        }
+        blocks.append(summary.notes.map { "_" + TranscriptLayout.escapeInline($0) + "_" }.joined(separator: "\n"))
+        return "## Summary\n" + blocks.joined(separator: "\n\n") + "\n"
     }
 
     /// The full CallRecord as pretty JSON (JSONEncoder.kanPretty).
@@ -275,11 +307,24 @@ public enum TranscriptRenderer {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// The plain-text form of `summaryMarkdown`: "Summary:", the overview, "Key points:"… lists and
+    /// the note on who wrote it.
+    static func summaryText(_ record: CallRecord) -> String? {
+        guard let summary = SummaryLayout(record) else { return nil }
+        var blocks: [String] = []
+        if !summary.overview.isEmpty { blocks.append(summary.overview.joined(separator: "\n\n")) }
+        for list in summary.lists {
+            blocks.append(list.heading + ":\n" + list.items.map { "- " + $0 }.joined(separator: "\n"))
+        }
+        blocks.append(summary.notes.joined(separator: "\n"))
+        return "Summary:\n" + blocks.joined(separator: "\n\n")
+    }
+
     /// "[00:00:05] Nahian: …" lines (merged per options), or a parenthesized status note.
     static func transcriptLines(_ record: CallRecord, options: RenderOptions) -> String {
         let blocks = TranscriptLayout.blocks(record, options: options)
         var lines: [String] = []
-        if let note = TranscriptLayout.statusNote(record, hasTranscript: !blocks.isEmpty) {
+        if options.includeStatusNote, let note = TranscriptLayout.statusNote(record, hasTranscript: !blocks.isEmpty) {
             lines.append("(\(note))")
         }
         for block in blocks {

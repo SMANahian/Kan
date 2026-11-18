@@ -280,6 +280,7 @@ struct LibraryHitRow: View {
         case .tags: return "number"
         case .notes: return "note.text"
         case .bookmark: return "bookmark"
+        case .summary: return "sparkles"
         case .transcript: return "text.quote"
         }
     }
@@ -291,6 +292,7 @@ struct LibraryHitRow: View {
         case .tags: return "Tags"
         case .notes: return "Notes"
         case .bookmark: return ["Bookmark", time].compactMap { $0 }.joined(separator: " · ")
+        case .summary: return "Summary (written by OpenAI)"
         case .transcript: return [hit.speakerName ?? "Transcript", time].compactMap { $0 }.joined(separator: " · ")
         }
     }

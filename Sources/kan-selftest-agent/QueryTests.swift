@@ -83,6 +83,15 @@ func queryTests() -> TestSuite {
         try expect(echo.passages.isEmpty, "echo suspects are not searched")
     }
 
+    suite.test("search: a summary passage reads after the title and bookmarks, before the transcript") {
+        let store = try AgentFixture.withInsights("queries-ai").library().store
+        let results = LibraryQueries.search(store, text: "tokenizer", filter: CallFilter(), limit: 0, perCall: 10)
+        try expectEqual(results.passages.map(\.hit.field), [.title, .summary, .transcript, .transcript])
+        try expectEqual(results.passages.compactMap(\.hit.time), [2, 7])
+        try expectEqual(LibraryQueries.list(store, filter: CallFilter(), text: "recognizer").calls.map(\.id), [IDs.summarized])
+        try expectEqual(store.summary(IDs.summarized)?.hasSummary, true)
+    }
+
     suite.test("transcript pages: offset, limit, time range, echo suspects hidden") {
         let store = try fixture().library().store
         let seminar = try store.record(IDs.seminar)

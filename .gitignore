@@ -11,3 +11,6 @@ Vendor/whisper.cpp/
 Vendor/whisper.cpp.partial/
 Vendor/whisper/lib.*/
 *.iconset/
+
+# Claude Code session state
+.claude/scheduled_tasks.lock

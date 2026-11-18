@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 import KanCore
 
-/// The selected call: header (title, folder, tags, star, metadata), status banner, speakers,
-/// transcript reader and player, with notes and bookmarks in the inspector.
+/// The selected call: header (title with OpenAI's ideas, folder, tags, star, metadata), status
+/// banner, speakers, OpenAI's summary, transcript reader and player, with notes and bookmarks in
+/// the inspector.
 struct LibraryCallDetail: View {
     let callID: CallID
     let window: LibraryWindowModel
@@ -38,6 +39,9 @@ struct LibraryCallDetail: View {
             }
             .task { await detail.start() }
             .onChange(of: window.revision) { detail.reload() }
+            // Every save of this call, also those that leave the list row as it was (OpenAI's
+            // title ideas or summary arriving).
+            .onChange(of: model.recordRevisions[callID]) { detail.reload() }
             .onChange(of: window.transcriptFocus, initial: true) { _, focus in
                 guard let focus, focus.callID == callID else { return }
                 detail.apply(focus)
@@ -69,6 +73,7 @@ struct LibraryCallDetail: View {
                 LibraryCallHeader(detail: detail, window: window)
                 LibraryStatusBannerView(detail: detail)
                 LibrarySpeakersBar(detail: detail)
+                LibrarySummarySection(detail: detail)
                 Divider()
                 LibraryTranscriptReader(detail: detail, player: window.player)
                 Divider()

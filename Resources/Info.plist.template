@@ -46,16 +46,16 @@
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Kan records your microphone during calls so it can write down what you said. Kan never uploads your recordings or transcripts.</string>
+	<string>Kan records your microphone during calls so it can write down what you said. Your recordings never leave this Mac; a transcript goes to OpenAI only if you use Kan's optional OpenAI features.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Kan records the sound of your call app (Zoom, Google Meet, Telegram…) so it can transcribe what the other people say. The audio is transcribed and stored only on this Mac.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Kan asks Chrome, Safari and similar browsers for the title and address of your meeting tab, so it can recognise Google Meet, Teams or Zoom calls and name the recording. Nothing else is read, and nothing leaves this Mac.</string>
+	<string>Kan asks Chrome, Safari and similar browsers for the title and address of your meeting tab, so it can recognise Google Meet, Teams or Zoom calls and name the recording. Nothing else is read, and nothing leaves this Mac unless you use Kan's optional OpenAI features, which send the call's title with its transcript.</string>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>Kan saves your call transcripts (Markdown and JSON files) in its library folder, Documents › Kan unless you choose another one, so you and your AI agents can read and search them.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Kan looks up the calendar event you're in when a call starts, to suggest a title and the attendees' names for the recording. Your calendar never leaves this Mac.</string>
+	<string>Kan looks up the calendar event you're in when a call starts, to suggest a title and the attendees' names for the recording. Your calendar never leaves this Mac; if you use Kan's optional OpenAI features, the call's title and participants go to OpenAI with its transcript.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>Kan looks up the calendar event you're in when a call starts, to suggest a title and the attendees' names for the recording. Your calendar never leaves this Mac.</string>
+	<string>Kan looks up the calendar event you're in when a call starts, to suggest a title and the attendees' names for the recording. Your calendar never leaves this Mac; if you use Kan's optional OpenAI features, the call's title and participants go to OpenAI with its transcript.</string>
 </dict>
 </plist>

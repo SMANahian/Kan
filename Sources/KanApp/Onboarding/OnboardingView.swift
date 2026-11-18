@@ -105,7 +105,7 @@ private struct WelcomeStep: View {
             Bullet("person.2.wave.2", "Knows who said what: your microphone is you; the other side is split into speakers you can name.")
             Bullet("tag", "Right after a call, asks for a title, folder and tags so your library stays organized.")
             Bullet("doc.text.magnifyingglass", "Stores every call as Markdown + JSON you can read, search, export or hand to your AI agents.")
-            Bullet("lock.shield", "Everything happens on this Mac. Kan uploads nothing — its only network use is downloading models.")
+            Bullet("lock.shield", "Everything happens on this Mac. Kan uploads nothing — its only network use is downloading models, unless you later use the optional OpenAI title ideas and summaries.")
         }
     }
 }

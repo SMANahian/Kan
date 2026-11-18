@@ -56,7 +56,7 @@ public struct Passage: Sendable {
 }
 
 public struct PassageResults: Sendable {
-    /// Best call first; inside a call: title, tags, notes, bookmarks, then transcript by time.
+    /// Best call first; inside a call: title, tags, notes, bookmarks, summary, then transcript by time.
     public var passages: [Passage]
     public var matchedCalls: Int
     /// Every hit in the matching calls, including those not returned.
@@ -275,7 +275,7 @@ public enum LibraryQueries {
         a.startedAt != b.startedAt ? a.startedAt > b.startedAt : a.id > b.id
     }
 
-    /// Title, tags, notes, bookmark, then transcript passages by time.
+    /// Title, tags, notes, bookmark, summary, then transcript passages by time.
     static func readingOrder(_ a: SearchHit, _ b: SearchHit) -> Bool {
         let fa = fieldRank(a.field), fb = fieldRank(b.field)
         if fa != fb { return fa < fb }
@@ -288,7 +288,8 @@ public enum LibraryQueries {
         case .tags: return 1
         case .notes: return 2
         case .bookmark: return 3
-        case .transcript: return 4
+        case .summary: return 4
+        case .transcript: return 5
         }
     }
 }

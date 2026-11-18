@@ -126,6 +126,17 @@ public struct KanSettings: Codable, Sendable, Equatable {
     // AI agents
     public var promptTemplates: [PromptTemplate] = PromptTemplate.defaults
 
+    // OpenAI (off by default; the API key is in the Keychain, never in this file)
+    /// Ask OpenAI for title ideas when a transcript is ready.
+    public var aiSuggestTitles: Bool = false
+    /// Ask OpenAI to summarize each call once it's transcribed and labeled.
+    public var aiSummarize: Bool = false
+    /// An OpenAI model id; empty = `defaultAIModel`.
+    public var aiModel: String = KanSettings.defaultAIModel
+    public var aiLanguage: AIOutputLanguage = .english
+
+    public static let defaultAIModel = "gpt-6.1-terra"
+
     // Shortcuts
     public var globalHotkeysEnabled: Bool = true
 
@@ -138,6 +149,10 @@ public struct KanSettings: Codable, Sendable, Equatable {
     public var effectiveUserName: String {
         let trimmed = userName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Me" : trimmed
+    }
+
+    public var effectiveAIModel: String {
+        aiModel.nonEmptyTrimmed ?? Self.defaultAIModel
     }
 
     public var libraryURL: URL {
@@ -201,6 +216,10 @@ public struct KanSettings: Codable, Sendable, Equatable {
         keepAudio = v(.keepAudio, d.keepAudio)
         audioRetentionDays = optional(.audioRetentionDays, Int.self)
         promptTemplates = Self.decodePromptTemplates(c, fallback: d.promptTemplates, report: report)
+        aiSuggestTitles = v(.aiSuggestTitles, d.aiSuggestTitles)
+        aiSummarize = v(.aiSummarize, d.aiSummarize)
+        aiModel = v(.aiModel, d.aiModel)
+        aiLanguage = v(.aiLanguage, d.aiLanguage)
         globalHotkeysEnabled = v(.globalHotkeysEnabled, d.globalHotkeysEnabled)
         useCalendar = v(.useCalendar, d.useCalendar)
     }
@@ -213,6 +232,7 @@ public struct KanSettings: Codable, Sendable, Equatable {
         case languageMode, generalModelID, englishModelID, banglaModelID, vocabulary, diarize
         case maxRemoteSpeakers, echoSuppression, rememberVoices, askedAboutVoices
         case keepAudio, audioRetentionDays, promptTemplates, globalHotkeysEnabled, useCalendar
+        case aiSuggestTitles, aiSummarize, aiModel, aiLanguage
     }
 
     private struct DynamicKey: CodingKey {

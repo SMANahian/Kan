@@ -22,6 +22,8 @@ enum IDs {
     static let processing = fixtureID("E0")
     static let seminar = fixtureID("F0")
     static let failed = fixtureID("G0")
+    static let summarized = fixtureID("S0")
+    static let outdated = fixtureID("S1")
 }
 
 /// A library of realistic calls (Bangla, English and code-switched) in a fresh temporary
@@ -178,6 +180,56 @@ struct AgentFixture {
                 weekly(IDs.weekly1, "2026-11-03T09:00:00-05:00", "Status update on the thesis chapters."),
                 weekly(IDs.weekly2, "2026-11-17T09:00:00-05:00", "Plan for the augmentation experiments."),
                 processing, failed, seminar]
+    }
+
+    /// A library with the advisor call (nothing from OpenAI) and the calls of `insightRecords()`.
+    static func withInsights(_ name: String) throws -> AgentFixture {
+        let fixture = try AgentFixture(name, populate: false)
+        let store = fixture.writer()
+        for record in records().filter({ $0.id == IDs.advisor }) + insightRecords() { try store.save(record) }
+        return fixture
+    }
+
+    /// Calls with OpenAI output: a Bangla call with title ideas (one applied as its title) and an
+    /// English summary of its current transcript, and a shortened summary written before a speaker
+    /// was named.
+    static func insightRecords() -> [CallRecord] {
+        let start = date("2026-11-16T11:00:00-05:00")
+        let written = date("2026-11-16T11:30:00-05:00")
+        var summarized = CallRecord(
+            id: IDs.summarized, title: "Bangla tokenizer benchmark plan", folder: "Research", tags: ["asr"], labeled: true,
+            startedAt: start, endedAt: start.addingTimeInterval(1200), timeZone: "America/New_York",
+            source: CallSource(appName: "Zoom", bundleID: "us.zoom.xos", platform: .zoom), status: .ready,
+            languages: ["bn", "en"], speakers: [me(talk: 300), remote("s1", "Rahim", talk: 400)],
+            segments: [
+                segment(0, 2, 6, "me", "চলো tokenizer নিয়ে কথা বলি।", "bn"),
+                segment(1, 7, 12, "s1", "Bengali.AI-এর tokenizer দিয়ে শুরু করা যায়।", "bn"),
+                segment(2, 13, 18, "me", "ঠিক আছে, আমি শুক্রবারের মধ্যে benchmark চালাব।", "bn"),
+            ])
+        let fingerprint = CallInsights.fingerprint(of: summarized)
+        summarized.ai = CallInsights(
+            titleSuggestions: AITitleSuggestions(
+                titles: ["Bangla tokenizer benchmark plan", "Choosing a tokenizer for Bangla ASR", "Bengali.AI tokenizer trial"],
+                model: "gpt-6.1-terra", generatedAt: written, fingerprint: fingerprint),
+            summary: AISummary(
+                overview: "Nahian and Rahim chose a tokenizer for the Bangla speech recognizer.",
+                keyPoints: ["Start from the Bengali.AI tokenizer [00:00:07]"], decisions: ["Benchmark before training"],
+                actionItems: ["Nahian: run the benchmark by Friday [00:00:13]"], language: .english,
+                model: "gpt-6.1-terra", generatedAt: written, fingerprint: fingerprint),
+            appliedTitle: "Bangla tokenizer benchmark plan")
+
+        let reviewStart = date("2026-11-15T16:00:00-05:00")
+        var outdated = CallRecord(
+            id: IDs.outdated, title: "Dataset review", folder: "Research", labeled: true, startedAt: reviewStart,
+            endedAt: reviewStart.addingTimeInterval(600), timeZone: "America/New_York",
+            source: CallSource(appName: "Zen", bundleID: "app.zen-browser.zen", platform: .googleMeet), status: .ready,
+            languages: ["en"], speakers: [me(), remote("s1", "Speaker 1")],
+            segments: [segment(0, 1, 5, "s1", "The split has to be by speaker, not by utterance.")])
+        outdated.ai = CallInsights(summary: AISummary(
+            overview: "Speaker 1 explained how to split the dataset.", language: .english, model: "gpt-6-luna",
+            generatedAt: date("2026-11-15T16:20:00-05:00"), fingerprint: CallInsights.fingerprint(of: outdated), shortened: true))
+        outdated.speakers[1] = remote("s1", "Karim")                // named after the summary was written
+        return [summarized, outdated]
     }
 }
 

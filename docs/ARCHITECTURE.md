@@ -4,7 +4,9 @@ Kan (কান, Bangla for "ear") is a macOS menu-bar app that notices when you'
 both sides locally, and afterwards transcribes the call — Bangla and English, code-switched — with
 "who said what". Right after the call it asks you to label it (title, folder, tags, notes), and
 everything is stored as plain Markdown + JSON that you and your AI agents can read, search and
-export. Kan uploads nothing; its only network use is downloading models.
+export. Kan uploads nothing unless the user opts in to the OpenAI features (title ideas and
+summaries written from the transcript, with the user's own API key); otherwise its only network use
+is downloading models.
 
 ## Requirements (from the user)
 
@@ -15,6 +17,8 @@ export. Kan uploads nothing; its only network use is downloading models.
 4. Speaker attribution ("who said what").
 5. After a call ends, prompt to label it so the library stays organized.
 6. Read and search transcripts later (mostly research ideas); export / hand them to AI agents.
+7. Optionally, with the user's own OpenAI API key: title ideas from the transcript after a call,
+   and a summary, each turned on or off in Settings.
 
 Requirement 1 is met by launch at login only; nothing restarts Kan after a crash (see
 [Known limitations](#known-limitations)).
@@ -28,16 +32,18 @@ Requirement 1 is met by launch at login only; nothing restarts Kan after a crash
 | `KanAudio` | library | Core Audio process taps, mic capture (HAL IOProc), 16 kHz WAV writing + anchors, `CallRecorder`, permissions, echo gate, `AudioArchiver` (m4a), WAV/m4a reading |
 | `KanDetect` | library | Core Audio client monitor + owner mapping, `CallStateMachine`, `CallDetector`, browser meeting probe (AppleScript + Accessibility titles) |
 | `KanTranscribe` | library | whisper.cpp engine, Silero VAD, chunk planner, {bn,en} language routing, decoding, post-processing, FluidAudio diarization, transcript assembly, `ModelStore`, `TranscriptionPipeline` |
+| `KanAI` | library | OpenAI Responses API client (`OpenAIAssistant`: title ideas, summaries, model list), `OpenAIModels`, `KeychainAPIKeyStore` (the API key) |
 | `KanAgent` | library | MCP server logic (JSON-RPC over stdio), CLI command implementations |
 | `KanApp` | executable | SwiftUI menu-bar app (bundled as `Kan.app`, executable `KanApp`) |
 | `kan` | executable | CLI + `kan mcp` for AI agents |
 | `kan-probe` | executable | read-only diagnostics (audio clients, owners, permissions, `--watch`) |
 | `kan-selftest-*` | executables | per-module tests on `KanTestKit` (XCTest doesn't run with CLT only) |
 
-Dependencies point downward only: `KanApp → {KanAudio, KanDetect, KanTranscribe} → KanCore`.
+Dependencies point downward only: `KanApp → {KanAudio, KanDetect, KanTranscribe, KanAI} → KanCore`.
 UI code talks to services only through the protocols in `KanCore/Contracts`
 (`CallDetecting`, `CallRecording`, `Transcribing`, `ModelManaging`, `PermissionsProviding`,
-`AudioArchiving`), wired in `Sources/KanApp/Services/LiveServices.swift`.
+`AudioArchiving`, `CallAssisting`, `APIKeyStoring`), wired in
+`Sources/KanApp/Services/LiveServices.swift`.
 
 ## End-to-end flow
 
@@ -60,6 +66,13 @@ Core Audio process list ──► CallDetector (KanDetect)
                                                     → post-process → assemble speakers
                                  ▼
                      LibraryStore writes  <Library>/<Folder>/<date title>.{json,md}
+                                 ▼
+                     AppModel (KanApp) ─► OpenAIAssistant (KanAI) ─► api.openai.com/v1/responses
+                                            opt-in: an API key + a feature on (or a button)
+                                            transcript ready → title ideas
+                                            + label panel done → summary
+                                 ▼
+                     LibraryStore updates record.ai  (the .md gains `## Summary`)
                                  ▼
                  Library window · `kan` CLI · `kan mcp` · any agent reading the files
 ```
@@ -224,6 +237,104 @@ Default models (in `~/Library/Application Support/Kan/Models`):
 | `silero-v6.2.0` | ggml-silero-v6.2.0.bin | VAD |
 | FluidAudio | Models/FluidAudio/… | diarization |
 
+### Title ideas and summaries (KanAI)
+
+Opt-in: nothing is sent until the user saves an OpenAI API key and turns on `aiSuggestTitles` or
+`aiSummarize`, or uses a manual action. A request carries the transcript lines
+(`[00:01:02] Name: text`, echo suspects left out, "Me" under the user's name) after a header with
+the title, date, duration, app, participants, tags, notes and bookmarks
+(`TranscriptRenderer.aiPrompt` with Kan's own templates, not the user's `promptTemplates`); a
+recording with no line from the call app's audio (mic only) gets a header line saying one
+microphone recorded everyone under the user's name. The transcript part is rendered as `.ready`, so
+Kan's own status note (a new transcript on its way, why the last one failed) is never sent. Never
+audio; the key goes only to `api.openai.com`.
+
+* Title ideas: when a transcription job leaves the record `.ready` with segments, `AppModel` asks
+  for 3 (`ai.titleSuggestions`). A title that is still automatic (`AppModel.isAutomaticTitle`:
+  `TranscriptRenderer.suggestedTitle(for:)` of the call as it is, or as it was before its speakers
+  had names, since a recognized voice names a speaker without retitling the call) or Kan's earlier
+  pick (`ai.appliedTitle`) becomes `titles[0]` (recorded as `appliedTitle`). Every rename by the
+  user, typed or picked (an idea chip or menu item included), goes through
+  `AppModel.setUserTitle`, which clears `appliedTitle`: that title never changes again, even when
+  it's the text Kan picked. The label panel follows the stored record (`recordRevisions`), so an
+  open panel shows the ideas as chips under the title and an applied title in an untouched title
+  field. Untouched includes focused: SwiftUI's TextField writes the text it shows back through its
+  binding on focus, on blur and after the value changed under it, so the panel's fields go through
+  `LabelDraft.text(of:in:)` / `setText(_:of:in:)`, which ignore a write of what the field shows.
+  The Library window's title field likewise follows the stored title while focused but untouched
+  (`LibraryCallDetailModel.beginEditingTitle`), and leaving it writes only a changed title.
+* Summary (`ai.summary`): once the transcript is ready **and** the user is done with the label
+  panel (Save, Later, or no panel with `showLabelPrompt` off), so it uses the speaker names they
+  gave; Discard cancels a waiting summary. Meanwhile the job is `.waiting` (the Library window:
+  "Written once you close the label panel" and Summarize Now). A language changed in the panel
+  makes it wait for the new transcript instead (`startWaitingSummaries` skips a call that is
+  queued or processing). Shown above the transcript in the Library window, its timestamps links
+  that move the player and the transcript there (`LibraryCallDetailModel.go(to:)`; a paused player
+  stays paused), and as `## Summary` in the `.md`.
+* Manual (a saved key is enough, no toggle needed): the Library window's Summarize / Regenerate /
+  Remove summary and title ideas menu; the label panel's Suggest titles chip (transcript ready, no
+  ideas yet).
+* Re-transcription (language change, Retry) is a new "transcript ready": both rules run again, so
+  a title Kan applied follows the new ideas and a user title stays. Renames and line edits
+  regenerate nothing; the fingerprint (Storage) marks older results stale (a banner with
+  Regenerate in the Library window, worked out again on every reload and after each edit made
+  there; an italic note in the `.md`).
+* Jobs: one per call and kind; discarding or deleting the call cancels it. A result goes through
+  the `LibraryStore` update path onto the re-read record (only `ai`, plus the title rule), so a
+  concurrent edit (label panel, Library window, agent) isn't lost. A failure shows
+  `AIError.message` with Retry, blocks nothing and isn't persisted. When a request a setting
+  started fails the way every later one will (`.missingKey`, `.invalidKey`, `.noCredit`,
+  `.spendLimit`, `.notAllowed`, `.modelUnavailable`), one "Kan couldn't use OpenAI" notice with
+  Settings… says so too, except for title ideas while that call's label panel (which shows the
+  error) is open. Quitting cancels every job, and nothing new starts once it has begun
+  (`startAIJob` checks `isTerminating`). Removing the key cancels every job and turns both
+  features off, so a key saved later starts nothing by itself.
+* Also: search matches the summary (overview and lists); the list preview is the notes, else the
+  summary's overview, else the transcript; `kan mcp`'s `get_call` includes the summary and title
+  ideas; AGENTS.md documents `ai`.
+* Requests (`OpenAIAssistant`): `POST /v1/responses` with `instructions` (role, rules, the
+  `aiLanguage` line) and `input` (header + transcript), a strict `json_schema` `text.format`
+  (`additionalProperties: false`, every property required), `"store": false`, reasoning effort
+  low (titles) / medium (summary) and `max_output_tokens` 16 000 / 64 000 (reasoning tokens count;
+  only a bound on a runaway answer); a 400 on the `reasoning` or `max_output_tokens` parameter is
+  retried once without it.
+  The answer is the `output_text` parts of the `message` items; a refusal, `status: incomplete`
+  or text that isn't the schema's JSON is an `AIError`.
+  * Titles: 3 specific ideas of 3–8 words; cleaned to one line without quotes or emphasis marks
+    that wrap the whole title (never a pair inside, as in "“A” vs “B”") or a trailing period,
+    case-insensitive duplicates dropped, ≤ 5 kept (none → `.badResponse`).
+  * Summary: `overview`, `keyPoints`, `ideas`, `decisions`, `actionItems` ("Owner: task"),
+    `openQuestions`. The instructions: only what was said; the transcript mixes Bangla and English
+    and has recognition errors (infer from context, never invent); names and terms as spoken;
+    `[00:12:34]` timestamps for important items.
+  * Long calls: the transcript part is capped (≈ 100 000 characters for titles, 400 000 for a
+    summary), keeping whole lines from the start and the end around "[… N lines from the middle
+    of the call are left out …]" (`AISummary.shortened`).
+* Errors → `AIError`, from OpenAI's error code / type first, then the HTTP status: billing stops
+  (`insufficient_quota`, `credit_balance_exhausted`, `billing_not_active` = no credit;
+  `organization_spend_limit_exceeded`, `project_spend_limit_exceeded`,
+  `organization_usage_limit_exceeded` = spend limit), `model_not_found`,
+  `context_length_exceeded`, `invalid_prompt` and usage-policy codes (refused), `invalid_api_key`
+  and other 401s (invalid key), `missing_scope`, `unsupported_country_region_territory` and other
+  403s (not allowed), other 429s (rate limit), anything else by status; a `status: failed` answer
+  maps its error the same way. URLErrors: offline, timed out, others by
+  code. Timeouts 120 s (titles) / 300 s (summary); at most 2 retries, only for rate limits,
+  500/502/503/504 and connection-level URLErrors, after 2 s then 6 s or `Retry-After`; a
+  `Retry-After` above 30 s throws at once (Kan never retries sooner than asked). Billing stops and
+  policy rejections are never retried. Cancellation stays a `CancellationError`. OpenAI's error
+  text is never kept (it can quote the key).
+* Settings › OpenAI › Test: `availableModels` (`GET /v1/models`) and whether `effectiveAIModel` is
+  among them. The picker offers `OpenAIModels.known` (GPT-6.1 Terra, the default; GPT-6 Luna;
+  GPT-6.1 Sol; GPT-6 Astra) and Other…; `isLikelyTextModel` filters `/v1/models` ids. Other…'s
+  Model ID field saves only what can be a model id (`AppModel.modelIDProblem`): text that looks
+  like an API key ("sk-…", or 32 characters without a separator) is refused with a message, so it
+  never reaches settings.json, `kan info` or the log. KanAI never sends, shows or logs an id that
+  isn't `OpenAIModels.isWellFormedID` (`[A-Za-z0-9._:-]`, ≤ 128 characters, no "sk-"): it fails
+  as `.modelUnavailable("?")`.
+* Tests: `kan-selftest-ai` replays scripted responses through a `URLProtocol` stub (no network);
+  the Keychain round trip runs only with `KAN_TEST_KEYCHAIN=1`, on a throwaway item. The app's
+  self-test uses a mock assistant and `InMemoryAPIKeyStore`, never the Keychain or the network.
+
 ### Storage
 
 ```
@@ -238,10 +349,23 @@ Default models (in `~/Library/Application Support/Kan/Models`):
                                      → me.m4a them.m4a; embeddings.json (only with Remember voices)
   Signing/                           the local code-signing keychain and its password file
 ~/Library/Logs/Kan/kan.log  kan-cli.log
+login keychain                       "Kan — OpenAI API key" (only if the user saved one)
 ```
 
 The `.json` (a `CallRecord`) is the source of truth; the `.md` is regenerated from it.
 `KAN_HOME=/some/dir` redirects app support, library and logs (tests, experiments).
+
+`CallRecord.ai` (`CallInsights`, JSON key `ai`, absent until a feature ran for the call) holds
+`titleSuggestions`, `summary` and `appliedTitle`, each part with its model, `generatedAt` and
+`fingerprint`. It decodes part by part: a part this build can't read (hand-edited, or from a newer
+Kan) is left out, never the call. `CallInsights.fingerprint(of:)` hashes (FNV-1a, 64 bit) only the
+transcript lines with the speakers' names, so storing a summary, title ideas, a title, notes or
+tags leaves it unchanged, while renaming a speaker or editing a line changes it and makes what was
+written before stale. In the `.md`, `## Summary` follows the header line (before `## Notes`): the
+overview, the non-empty lists (`### Key points`, `### Ideas`, `### Decisions`, `### Action items`,
+`### Open questions`), then italic notes: the model and date ("it can contain mistakes"), the left
+out middle when `shortened`, and, when stale, "The transcript changed after this summary was
+written". AI text is escaped like other user text; the front matter keys don't change.
 
 Library (`LibraryStore`):
 
@@ -279,7 +403,24 @@ Settings (`SettingsStore`): decoded field by field and entry by entry. An unread
 policy becomes Ask (never a laxer default), unreadable prompt templates are dropped (the defaults
 only when none is readable), and the next save first copies the original to
 `settings.backup-<unix time>.json`. A file that can't be decoded at all is moved aside
-(`settings.corrupt-<unix time>.json`) and the defaults are used.
+(`settings.corrupt-<unix time>.json`) and the defaults are used. The OpenAI settings decode the
+same way: `aiSuggestTitles` and `aiSummarize` (both off), `aiModel` (`KanSettings.defaultAIModel`,
+`gpt-6.1-terra`; blank means the default, `effectiveAIModel`) and `aiLanguage` (English; or
+Bangla, or the call's main language). The API key is never in `settings.json`.
+
+OpenAI API key (`APIKeyStoring`; `KeychainAPIKeyStore` in KanAI): a generic password in the login
+keychain, service `com.nahian.Kan.openai`, account `default`, label "Kan — OpenAI API key". It's
+the legacy file keychain (no `kSecUseDataProtectionKeychain`, no access group), as Kan is
+self-signed without a provisioning profile. Save updates or adds; a read that fails counts as no
+key (logged by OSStatus only); delete tolerates a missing item; errors carry the OSStatus, never
+the key. A read can block while macOS asks whether Kan may use the item, so the app loads the key
+off the main thread at startup. That ask comes once per update: Kan is self-signed without a Team
+ID, so the keychain ties the item to the build that saved it (its code hash), and a new build's
+first read asks for the login password (Always Allow or Allow). A one-time Allow would leave it
+asking at every launch, so after its first successful read in a process `KeychainAPIKeyStore`
+saves the same key again (`SecItemUpdate`, a failure logged by OSStatus), which ties the item to
+the running build without asking. The UI shows only "sk-…" and the last 4 characters; Settings ›
+OpenAI saves, replaces (Replace…), tests and removes it. `KAN_HOME` doesn't move it.
 
 Processing (`ProcessingQueue`, persisted in `queue.json`):
 
@@ -312,6 +453,11 @@ Processing (`ProcessingQueue`, persisted in `queue.json`):
   quote titles and paths); MCP tool errors are logged by `ToolError.Kind`. Unified-log messages are
   `.public`. Debug lines reach `kan.log` only in debug builds, with `KAN_DEBUG=1`, or with
   `defaults write com.nahian.Kan KanDebugLogging -bool true`.
+* The "ai" category (OpenAI requests) logs call ids, counts, the model id ("?" for text that
+  can't be one), durations and `AIError.logDescription` (debug lines may add the HTTP status,
+  OpenAI's error code / type and token counts); never the API key (not even a prefix), titles or
+  title ideas, summary or transcript text, notes, OpenAI's error messages (they can quote the key)
+  or request / response bodies.
 * App Nap: Kan has no window open while it records or transcribes, so it holds a
   `.userInitiated` activity from the start of a recording until it is saved and while a
   transcription runs (`AppModel.updateActivities`); the recorder's 50 ms pump and the detector's
@@ -351,6 +497,12 @@ designated requirement is the same either way, so permissions carry over.
   builds run unattended. The identity is only as safe as the user account.
 * The waiting label panel polls `currentActivities()` every 2 s (the detector has no event for
   apps it doesn't record).
+* OpenAI jobs aren't resumed after a relaunch: a title or summary job that was running or waiting
+  when Kan quit is dropped, and failures aren't persisted. The Library window's Suggest titles /
+  Summarize cover it.
+* Title ideas need the finished transcript, so they usually arrive after the label panel opened,
+  often after it was saved: an open or reopened panel shows them as chips, the Library window's
+  title menu always. An untouched automatic title is still replaced; a typed one never.
 * Not yet checked on real calls: tap recovery under real faults, whether a prompt grant of System
   Audio Recording applies without a relaunch, and which call apps release the mic while muted
   (`kan-probe watch`).

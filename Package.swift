@@ -30,6 +30,7 @@ let package = Package(
         .executable(name: "kan-selftest-audio", targets: ["kan-selftest-audio"]),
         .executable(name: "kan-selftest-transcribe", targets: ["kan-selftest-transcribe"]),
         .executable(name: "kan-selftest-agent", targets: ["kan-selftest-agent"]),
+        .executable(name: "kan-selftest-ai", targets: ["kan-selftest-ai"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.3", traits: ["Diarizer"]),
@@ -80,12 +81,15 @@ let package = Package(
         // AI-agent surface: MCP server (JSON-RPC 2.0 over stdio) and the CLI commands.
         .target(name: "KanAgent", dependencies: ["KanCore"], path: "Sources/KanAgent", swiftSettings: swift5),
 
+        // OpenAI title ideas and summaries (opt-in): Responses API client, prompts, the Keychain key store.
+        .target(name: "KanAI", dependencies: ["KanCore"], path: "Sources/KanAI", swiftSettings: swift5),
+
         // The menu-bar app (bundled as Kan.app with CFBundleExecutable KanApp — the app binary
         // can't be called "Kan" because the CLI is "kan" and APFS is case-insensitive).
         .executableTarget(
             name: "KanApp",
             // Concrete services are wired in Sources/KanApp/Services/LiveServices.swift.
-            dependencies: ["KanCore", "KanAudio", "KanDetect", "KanTranscribe", "KanAgent"],
+            dependencies: ["KanCore", "KanAudio", "KanDetect", "KanTranscribe", "KanAgent", "KanAI"],
             path: "Sources/KanApp",
             swiftSettings: swift5
         ),
@@ -101,5 +105,6 @@ let package = Package(
         .executableTarget(name: "kan-selftest-audio", dependencies: ["KanCore", "KanAudio", "KanDetect", "KanTestKit"], path: "Sources/kan-selftest-audio", swiftSettings: swift5),
         .executableTarget(name: "kan-selftest-transcribe", dependencies: ["KanCore", "KanTranscribe", "KanTestKit"], path: "Sources/kan-selftest-transcribe", swiftSettings: swift5),
         .executableTarget(name: "kan-selftest-agent", dependencies: ["KanCore", "KanAgent", "KanTestKit"], path: "Sources/kan-selftest-agent", swiftSettings: swift5),
+        .executableTarget(name: "kan-selftest-ai", dependencies: ["KanCore", "KanAI", "KanTestKit"], path: "Sources/kan-selftest-ai", swiftSettings: swift5),
     ]
 )

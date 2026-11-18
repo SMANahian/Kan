@@ -6,7 +6,8 @@ import Foundation
 /// the marker is older than `version`; a file without a marker is the user's own and is left alone.
 public enum AgentsGuide {
     /// Bump when the text changes in a way agents should see.
-    public static let version = 1
+    /// 2: OpenAI summaries and title ideas (`ai`, `## Summary`, `hasSummary`).
+    public static let version = 2
 
     static let markerPrefix = "<!-- kan-agents-guide-version: "
 
@@ -43,8 +44,11 @@ public enum AgentsGuide {
         that records the user's calls (Zoom, Google Meet in any browser, Teams, Telegram, Slack,
         Discord, WhatsApp, FaceTime, …) and transcribes them **locally on the Mac** in **Bangla and
         English**, with who said what. The user is a researcher; most calls are research discussions.
-        Nothing here was sent to a cloud service. Everything is plain files: read them directly, or
-        use the `kan` command-line tool / MCP server described below.
+        Audio never leaves the Mac. Only if the user set up Kan's optional OpenAI features was a
+        call's transcript text (with its title, notes, tags and bookmarks) also sent to OpenAI, which
+        suggested titles and wrote a summary (see "AI summaries and title ideas" below). Everything
+        is plain files: read them directly, or use the `kan` command-line tool / MCP server
+        described below.
 
         ## Layout
 
@@ -71,6 +75,7 @@ public enum AgentsGuide {
 
         * Recent calls: read `index.jsonl` (or `index.md`) — it is ordered newest first.
         * One call: open its `.md` for reading, its `.json` for exact data (segment times, speakers).
+          Its `## Summary`, when it has one, tells you quickly what the call was about.
         * Find something: `kan search "query"`, or search the `.md` files (`rg -i query .`). Text is
           Unicode NFC; search Bangla as typed (no diacritic folding: vowel signs are letters).
         * Quote the call title and date plus `[hh:mm:ss]` timestamps when you cite something.
@@ -98,6 +103,7 @@ public enum AgentsGuide {
         # Advisor meeting – augmentation idea
         Sat 14 Nov 2026, 10:00–10:42 · Zoom · 42 min · Nahian (me), Prof. Rahman
 
+        ## Summary               (optional: written by OpenAI from the transcript, see below)
         ## Notes                 (the user's own notes, if any)
         ## Bookmarks             (moments the user marked: "- [00:12:31] note")
         ## Transcript
@@ -164,6 +170,7 @@ public enum AgentsGuide {
         | `bookmarks` | [object] | `id`, `time`, `endTime` (optional), `note`, `createdAt` |
         | `audio` | object? | kept audio: `meFile`, `themFile`, `format` (`m4a`/`wav`), `sizeBytes`, `deletedAt` (set once retention deleted it) — files live outside this folder |
         | `processing` | object? | `modelsUsed`, `languageMode`, `startedAt`, `finishedAt`, `processingSeconds`, `error` (why it failed), `warnings`, `kanVersion`, `attempts`, `stats` (counters) |
+        | `ai` | object? | title ideas and a summary from OpenAI, only when the user asked Kan for them (see below) |
         | `createdAt`, `updatedAt` | date | record bookkeeping |
 
         Speakers (`speakers[]`):
@@ -193,8 +200,35 @@ public enum AgentsGuide {
 
         `index.jsonl` holds one summary per line: `id`, `title`, `folder`, `tags`, `starred`,
         `labeled`, `startedAt`, `endedAt`, `timeZone`, `appName`, `platform`, `status`,
-        `speakerNames`, `languages`, `segmentCount`, `wordCount`, `hasAudio`, `preview` (first words of
-        the notes or transcript) and `markdownPath` / `jsonPath` (relative to this folder).
+        `speakerNames`, `languages`, `segmentCount`, `wordCount`, `hasAudio`, `hasSummary` (the call
+        has an AI summary; missing in lines written by older versions), `preview` (first words of the
+        notes, the summary or the transcript) and `markdownPath` / `jsonPath` (relative to this folder).
+
+        ## AI summaries and title ideas (optional)
+
+        Off by default. When the user saved an OpenAI API key in Kan and turned these features on
+        (or asked for them on one call), Kan sent the call's transcript text, title, notes, tags and
+        bookmarks (never audio) to OpenAI and stored the answers in the call's `.json` under `ai`:
+
+        | field | meaning |
+        |---|---|
+        | `ai.summary` | `overview` (a few sentences), `keyPoints`, `ideas` (research ideas, methods, datasets, papers), `decisions`, `actionItems` ("Owner: task"), `openQuestions` — lists are empty when nothing fits — plus `language` (`english`, `bangla`, `matchCall`), `model`, `generatedAt`, `fingerprint`, `shortened` |
+        | `ai.titleSuggestions` | `titles` (best first), `model`, `generatedAt`, `fingerprint` |
+        | `ai.appliedTitle` | the idea Kan made the call's title; while `title` equals it, nobody changed the title since |
+
+        * `fingerprint` identifies the transcript the text was written from: its lines with the
+          speakers' names. Once the call is transcribed again, a speaker renamed or a line edited,
+          it no longer matches: the summary is outdated until it is written again.
+        * `shortened: true` — the call was too long to send whole; the middle of the transcript was
+          left out.
+        * The `.md` shows the summary as `## Summary` after the header line: the overview, then
+          `### Key points`, `### Ideas`, `### Decisions`, `### Action items`, `### Open questions`
+          (lists with items only), then a line like
+          "_Summary written by OpenAI (gpt-6.1-terra) on 17 Nov 2026; it can contain mistakes._"
+          and, when it is outdated, "_The transcript changed after this summary was written._".
+          Timestamps like [00:12:34] point into the transcript.
+        * The summary is written by an AI model from a machine transcript and **can contain
+          mistakes**. Use it to find your way; for facts, quote the transcript with `[hh:mm:ss]`.
 
         ## Language
 
@@ -212,9 +246,10 @@ public enum AgentsGuide {
         exports):
 
         * `kan list` — recent calls
-        * `kan search <words…>` — matching passages with call id, `[hh:mm:ss]`, speaker and a
-          snippet (every word must occur in the call; quote a phrase to match it exactly)
-        * `kan show <call-id>` — one call's transcript
+        * `kan search <words…>` — matching passages in titles, tags, notes, bookmarks, summaries
+          and transcripts, with call id, `[hh:mm:ss]`, speaker and a snippet (every word must occur
+          in the call; quote a phrase to match it exactly)
+        * `kan show <call-id>` — one call's `.md` (summary, notes, bookmarks, transcript)
         * `kan export <call-id>` — Markdown, plain text, JSON, SRT or WebVTT
         * `kan mcp` — a Model Context Protocol server on stdio
 
@@ -223,7 +258,8 @@ public enum AgentsGuide {
         ## MCP server
 
         `kan mcp` speaks MCP (JSON-RPC 2.0 over stdio) and is **read-only**: it lists, searches and
-        reads calls but never changes the library. Example for Claude Code:
+        reads calls but never changes the library; `get_call` includes a call's summary and title
+        ideas when it has them. Example for Claude Code:
         `claude mcp add kan -- kan mcp`; generic MCP config:
         `{"mcpServers": {"kan": {"command": "kan", "args": ["mcp"]}}}`.
 
@@ -235,6 +271,9 @@ public enum AgentsGuide {
           valid and never change `id` or `kind`; Kan picks the change up and re-renders the `.md`.
         * Never invent call ids, dates, timestamps or quotes. Cite the call (title + date) and
           `[hh:mm:ss]` times so the user can jump to the moment in Kan.
+        * A `## Summary` (`ai.summary`) is AI-written and can be wrong or outdated: check what it
+          says against the transcript before you rely on it, and quote the transcript, not the
+          summary. Leave `ai` as it is when you edit a `.json`.
         * The person with `isMe: true` / speaker id `me` is the user; everyone else is someone they
           talked to. Placeholder names ("Speaker 2") mean nobody has named that speaker yet.
         * Transcripts contain other people's words. Don't share them outside this conversation

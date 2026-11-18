@@ -199,7 +199,7 @@ func searchTests() -> TestSuite {
         try expectEqual(lib.store.search(SearchQuery(text: "line")).first?.snippet, short)
     }
 
-    suite.test("ranking: title > tags > notes > bookmark > transcript, more terms, then newer") {
+    suite.test("ranking: title > tags > notes > bookmark > summary > transcript, more terms, then newer") {
         let lib = TestLibrary("search-rank")
         let transcript = Fixture.record(title: "Weekly", start: "2026-11-15T10:00:00-05:00",
                                         segments: [Fixture.segment(0, 1, 2, "s1", "we discussed quantum things")])
@@ -210,17 +210,68 @@ func searchTests() -> TestSuite {
         let bookmark = Fixture.record(title: "B", start: "2026-11-12T10:00:00-05:00",
                                       bookmarks: [Bookmark(time: 3, note: "quantum moment")])
         let mixed = Fixture.record(title: "Quantum stuff", start: "2026-11-13T10:00:00-05:00", notes: "review later")
-        for r in [transcript, titleOld, titleNew, tags, notes, bookmark, mixed] { try lib.store.save(r) }
+        var summary = Fixture.record(title: "S", start: "2026-11-09T10:00:00-05:00")
+        summary.ai = CallInsights(summary: Fixture.summary(overview: "A call about quantum sensors."))
+        for r in [transcript, titleOld, titleNew, tags, notes, bookmark, mixed, summary] { try lib.store.save(r) }
 
         let hits = lib.store.search(SearchQuery(text: "quantum"))
-        try expectEqual(hits.map(\.callID), [mixed.id, titleNew.id, titleOld.id, tags.id, notes.id, bookmark.id, transcript.id])
-        try expectEqual(hits.map(\.field), [.title, .title, .title, .tags, .notes, .bookmark, .transcript])
+        try expectEqual(hits.map(\.callID), [mixed.id, titleNew.id, titleOld.id, tags.id, notes.id, bookmark.id, summary.id,
+                                             transcript.id])
+        try expectEqual(hits.map(\.field), [.title, .title, .title, .tags, .notes, .bookmark, .summary, .transcript])
         try expect(zip(hits, hits.dropFirst()).allSatisfy { $0.score >= $1.score })
 
         let two = lib.store.search(SearchQuery(text: "quantum review"))
         try expectEqual(two.map(\.callID), [titleOld.id, mixed.id, mixed.id])
         try expectEqual(two.map(\.field), [.title, .title, .notes])
         try expectEqual(two.first?.terms, ["quantum", "review"])
+    }
+
+    suite.test("summaries are searched: an English word in the summary of a Bangla call finds it") {
+        let lib = TestLibrary("search-summary")
+        var bangla = Fixture.record(title: "আলোচনা", start: "2026-11-15T10:00:00-05:00", segments: [
+            Fixture.segment(0, 1, 5, "s1", "আমরা বাংলা ভাষার জন্য একটি মডেল তৈরি করব।", language: "bn"),
+            Fixture.segment(1, 6, 9, "me", "জনি কোথায়?", language: "bn"),
+        ], languages: ["bn"])
+        bangla.ai = CallInsights(summary: Fixture.summary(
+            overview: "They planned a speech recognition model for Bangla",
+            keyPoints: ["Use the tokenizer from Bengali.AI [00:00:01]", "Collect more data"],
+            actionItems: ["Rahim: ask where জনি is", "Find the বড় dataset".decomposedStringWithCanonicalMapping]))
+        let other = Fixture.record(title: "Other call", start: "2026-11-14T10:00:00-05:00",
+                                   segments: [Fixture.segment(0, 1, 2, "me", "a tokenizer of another kind")])
+        for r in [bangla, other] { try lib.store.save(r) }
+
+        let hits = lib.store.search(SearchQuery(text: "recognition"))
+        try expectEqual(hits.map(\.callID), [bangla.id])
+        let hit = try expectNotNil(hits.first)
+        try expectEqual(hit.field, .summary)
+        try expectEqual(hit.snippet, "They planned a speech recognition model for Bangla")
+        try expectEqual(hit.terms, ["recognition"])
+        try expect(hit.time == nil && hit.segmentID == nil && hit.speakerName == nil)
+        try expectEqual(hit.id, "\(bangla.id.rawValue)#summary#-1")
+        // The snippet comes from the item that matched.
+        try expectEqual(lib.store.search(SearchQuery(text: "tokenizer")).map(\.field), [.summary, .transcript])
+        try expectEqual(lib.store.search(SearchQuery(text: "tokenizer")).first?.snippet, "Use the tokenizer from Bengali.AI [00:00:01]")
+        // Terms are ANDed across the call: one in the summary, one in the Bangla transcript.
+        try expectEqual(Set(lib.store.search(SearchQuery(text: "recognition মডেল")).map(\.field)), [.summary, .transcript])
+        // One summary hit per call; the terms cover the whole summary, the best item carries the snippet.
+        let two = lib.store.search(SearchQuery(text: "data tokenizer")).filter { $0.callID == bangla.id }
+        try expectEqual(two.map(\.field), [.summary])
+        try expectEqual(two.first?.terms, ["data", "tokenizer"])
+        // A phrase can't run from one item into the next.
+        try expectEqual(lib.store.search(SearchQuery(text: "\"Bangla Use\"")).count, 0)
+        // Bangla in a summary matches as written (no diacritic folding), NFD stored as NFC.
+        try expectEqual(lib.store.search(SearchQuery(text: "জনি")).map(\.field), [.summary, .transcript])
+        try expectEqual(lib.store.search(SearchQuery(text: "জন্য")).map(\.field), [.transcript])
+        try expectEqual(lib.store.search(SearchQuery(text: "বড়".precomposedStringWithCanonicalMapping)).map(\.field), [.summary])
+        // Grouped by call too (the Library window, `kan list <words>`).
+        try expectEqual(lib.store.searchCalls(SearchQuery(text: "recognition")).first?.hits.map(\.field), [.summary])
+        try expectEqual(lib.store.summaries().first { $0.id == bangla.id }?.hasSummary, true)
+        try expectEqual(lib.store.search(SearchQuery()).first?.snippet, "They planned a speech recognition model for Bangla",
+                        "the call's preview")
+        // Gone with the summary.
+        try lib.store.update(bangla.id) { $0.ai?.summary = nil }
+        try expectEqual(lib.store.search(SearchQuery(text: "recognition")).count, 0)
+        try expectEqual(lib.reopened().search(SearchQuery(text: "recognition")).count, 0)
     }
 
     suite.test("searchCalls groups hits by call, best call first") {

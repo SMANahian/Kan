@@ -5,7 +5,8 @@ sides on your Mac, and afterwards transcribes the call, in Bangla, English or bo
 with who said what. Right after each call it asks you to label it, and it keeps every transcript as
 plain Markdown + JSON that you, Kan's search and your AI agents can read.
 
-Kan uploads nothing: its only network use is the one-time model downloads.
+Kan uploads nothing unless you use its optional OpenAI features, which send a call's transcript
+(never its audio) to OpenAI. Apart from those, its only network use is the one-time model downloads.
 
 - **Automatic call detection**: Zoom, Google Meet in any browser (Zen, Firefox, Chrome, Safari,
   Arc, Brave, Edge…), Microsoft Teams, Slack huddles, Discord, Telegram, WhatsApp, Signal,
@@ -16,8 +17,30 @@ Kan uploads nothing: its only network use is the one-time model downloads.
 - **Who said what**: other speakers are told apart automatically. Name them once; Kan can remember
   voices for later calls if you let it.
 - **Organized as you go**: a small panel after each call asks for a title, folder, tags and notes.
+- **Title ideas and summaries, if you want them**: with your own OpenAI API key, Kan suggests
+  titles from the transcript and writes a summary of each call. Both are off by default.
 - **Yours to use**: search everything, export (Markdown, text, JSON, SRT, VTT), copy a call into
   an AI prompt, or let agents read the library through the `kan` CLI or MCP.
+
+## Ask before you record
+
+Kan records without announcing itself: it starts on its own when it detects a call, no bot joins
+the meeting, and the other people get no notice from Kan. Telling them is up to you.
+
+- **Tell everyone and get their OK before you record.** Ask in the invitation or as the call
+  begins. If anyone says no, press **Don't record** on Kan's notice or choose
+  **Discard recording…** in its menu. Set apps you never want recorded to **Never** in
+  Settings › Detection.
+- **Recording without everyone's consent is illegal in many places.** In the US, California,
+  Massachusetts and several other states require the consent of everyone on the call, and so do
+  many countries. A call can connect places with different laws, and the stricter one can apply.
+- **Your workplace or university** may have its own rules about recording meetings.
+- **If you use the [OpenAI features](#openai-title-ideas-and-summaries-optional)**, the transcript
+  also goes to OpenAI. Tell people that too.
+
+Kan is provided as is, without warranty of any kind, and its authors aren't liable for how it's
+used. You, the person recording, are responsible for complying with the law where you and the
+people you record are. This is not legal advice.
 
 ## Requirements
 
@@ -153,7 +176,9 @@ opens the library.
 
 When a call is saved, a small panel asks for:
 
-- **Title**: suggested from your calendar, the meeting's name or the app.
+- **Title**: suggested from your calendar, the meeting's name or the app, and, if you use
+  [OpenAI title ideas](#openai-title-ideas-and-summaries-optional), from the transcript once it's
+  ready.
 - **Folder**: for example `Research/Thesis` (use `/` for nested folders). Leave it empty for the Inbox.
 - **Tags**, **notes** and a **star** for calls worth keeping.
 - **Language**: Auto (বাংলা + English), বাংলা or English. Changing it re-runs the transcription.
@@ -170,6 +195,79 @@ move a line to the right speaker.
 The panel takes the keyboard when it opens, so it waits while you're still on a call, for example
 after **Stop & Save** in the middle of a meeting. It appears once the call app lets go of the
 microphone; pick the call under **Needs labeling** in the menu to open it right away.
+
+## OpenAI title ideas and summaries (optional)
+
+With your own OpenAI API key, Kan can suggest titles for a call and write a summary of it from the
+transcript. Both are off by default: Kan sends nothing to OpenAI until you save a key and then turn
+a feature on or click one of the buttons below.
+
+**Setup**: create a key at [platform.openai.com/api-keys](https://platform.openai.com/api-keys),
+paste it in Settings › OpenAI, click **Save**, then **Test** (it checks the key and whether it can
+use the chosen model). Turn on *Suggest titles when a transcript is ready*, *Summarize each call
+after you label it*, or both, and pick the language they're written in: English, বাংলা or the same
+as the call. The key is kept in your login keychain (as "Kan — OpenAI API key"), never in Kan's
+settings file; **Replace…** puts in another one. After you update Kan, macOS may ask once whether
+Kan may use that keychain item: enter your login password and choose **Always Allow** (or
+**Allow**). Kan then saves the key again for the new version, so it doesn't ask again until the
+next update.
+
+- **Title ideas**: when the transcript is ready, Kan asks for three. If the call still has the
+  title Kan suggested (from your calendar, the meeting's name or the app, with or without the
+  speakers' names) or the idea Kan picked before, the first idea replaces it; a title you typed is
+  never replaced. The ideas appear under the title in the label panel, if it's open (or when you
+  reopen it), and in the ✨ menu next to the title in the library window. Click one to make it your
+  title: like a typed one, new ideas never replace it.
+- **Summary**: an overview, then key points, ideas, decisions, action items and open questions,
+  citing timestamps (click one in the library window to go to that moment in the transcript and
+  the player). Kan writes it once the transcript is ready and you've closed the label panel with
+  **Save** or **Later** (right away if the panel is turned off), so it uses the names you gave the
+  speakers; **Discard** cancels it.
+  Until then the library window says *Written once you close the label panel* and offers
+  **Summarize Now**. If you change the call's language in the panel, the summary waits for the new
+  transcript. It appears above the transcript in the library window, as `## Summary` in the
+  call's `.md` and under `ai` in its `.json`, so your agents see it too. A model wrote it: check
+  facts against the transcript.
+- **On demand**: with a key saved, even with both features off, the library window can summarize
+  any call (**Summarize with OpenAI**) and suggest titles for it (**Suggest Titles with OpenAI** in
+  the ✨ menu), and the label panel offers **Suggest titles** once the transcript is ready.
+- **Later changes**: re-transcribing a call runs the features that are on again; a title Kan
+  picked follows the new ideas, one you typed stays. After you rename or merge speakers or move a
+  line to another speaker, the library window says the summary is out of date and offers
+  **Regenerate**.
+- **Errors** (no API credit left, a key OpenAI doesn't accept, no internet…) show in the label
+  panel or the library window with **Retry**; nothing else waits for them. When a request Kan made
+  by itself fails because of your OpenAI account (the key, no credit or a spend limit, the key's
+  permissions, a model it can't use), a notice, *Kan couldn't use OpenAI*, says so too (unless the
+  open label panel shows it), with **Settings…**. A request that was running when Kan quit isn't
+  repeated; use the library window's buttons.
+
+**What OpenAI receives**: the transcript as text (timestamps, speaker names and what was said,
+without the lines Kan hid as possible echo), the call's title, date, duration, app and
+participants, and your notes, tags and bookmarks. Never the audio, and your key goes only to
+`api.openai.com`. Kan sends `"store": false`, so OpenAI doesn't keep the answers for later
+retrieval; OpenAI's API data policies apply to what it receives. A transcript too long to send
+whole is sent without its middle, and a summary written from it says so. Tell the people on your
+calls that their words go to OpenAI too (see [Ask before you record](#ask-before-you-record)).
+
+**Cost**: requests are billed to the OpenAI API account the key belongs to. Choose the model in
+Settings › OpenAI:
+
+| Model | Rough cost per hour-long call |
+|---|---|
+| GPT-6.1 Terra (`gpt-6.1-terra`), the default: clear, natural writing | A few cents |
+| GPT-6 Luna (`gpt-6-luna`) | About a tenth of Terra's |
+| GPT-6.1 Sol (`gpt-6.1-sol`): stronger reasoning | About twice Terra's |
+| GPT-6 Astra (`gpt-6-astra`): the most capable | About ten times Terra's |
+
+*Other…* takes any model id your key can use. It refuses text that looks like an API key, so a key
+pasted into the wrong field is never saved.
+
+**Turning it off**: switch the features off in Settings › OpenAI, or **Remove…** the key there:
+Kan deletes it from your keychain, stops any request in progress and turns both features off, so
+saving a key later doesn't start sending again by itself. Summaries and title ideas already
+written stay with their calls; **Remove Summary…** in a summary's ⋯ menu in the library window
+deletes it.
 
 ## The library
 
@@ -191,12 +289,13 @@ note is safe. If iCloud Drive syncs the folder (iCloud's "Desktop & Documents Fo
 ```
 
 - The **`.json`** is the source of truth: segments with start and end times, speaker, language and
-  text, plus speakers, bookmarks, notes and tags.
+  text, plus speakers, bookmarks, notes and tags, and under `ai` any title ideas and summary from
+  OpenAI.
 - The **`.md`** is generated from it: YAML front matter (`kan_id`, `title`, `date`, `duration`,
-  `app`, `folder`, `tags`, `people`, `languages`, …) and then the transcript as
-  `**Name** [00:12:31]` paragraphs. Edit calls in Kan, not in the `.md`, because Kan rewrites it.
-  When you or an agent edit a `.json`, Kan renders a new `.md` from it, also for edits made while
-  Kan wasn't running (at its next launch).
+  `app`, `folder`, `tags`, `people`, `languages`, …), the OpenAI summary if there is one
+  (`## Summary`), and then the transcript as `**Name** [00:12:31]` paragraphs. Edit calls in Kan,
+  not in the `.md`, because Kan rewrites it. When you or an agent edit a `.json`, Kan renders a new
+  `.md` from it, also for edits made while Kan wasn't running (at its next launch).
 - Every call has a stable id (`kan_id`). Kan renames and moves the files when you change a title or
   folder. Files you move or rename in Finder are found again. If a call ends up in two files (a
   Finder duplicate, a sync conflict), Kan uses the newer one, and deleting the call removes both.
@@ -207,7 +306,7 @@ note is safe. If iCloud Drive syncs the folder (iCloud's "Desktop & Documents Fo
 
 ## Search
 
-The library window searches titles, notes, tags, bookmarks and transcripts:
+The library window searches titles, notes, tags, bookmarks, summaries and transcripts:
 
 - Words are combined with AND; `"quoted phrases"` must match exactly.
 - Matching ignores case but never folds Bangla vowel signs, so জনি doesn't match জন্য.
@@ -283,7 +382,10 @@ Cursor…) may access your Documents folder. Allow it, or move the library elsew
 ## Privacy
 
 - Recording, transcription, speaker separation and search all run on your Mac. Kan has no account,
-  no cloud and no analytics. Its only network traffic is downloading models from Hugging Face.
+  no cloud and no analytics. Its only network traffic is downloading models from Hugging Face and,
+  if you use them, the [OpenAI features](#openai-title-ideas-and-summaries-optional), which send
+  the transcript and the call's details (never its audio) to OpenAI with your API key. Kan keeps
+  that key in your login keychain and sends it nowhere else.
 - Audio stays in `~/Library/Application Support/Kan/Calls` and is deleted according to your
   retention setting. Deleting a call deletes its audio.
 - Remembered voices (biometric data about other people) are opt-in (Settings › Transcription ›
@@ -293,14 +395,16 @@ Cursor…) may access your Documents folder. Allow it, or move the library elsew
   off, so you can still name the speakers once the audio is gone; deleting the call or its audio,
   turning Remember voices off, or **Forget All Voices** deletes them (Settings › Transcription
   counts them).
-- Kan's logs (`~/Library/Logs/Kan`) never contain what was said, call titles, folder or file
-  names, people's names, meeting addresses or what an agent searched for: calls appear by id.
+- Kan's logs (`~/Library/Logs/Kan`) never contain what was said, call titles, title ideas or
+  summaries, folder or file names, people's names, meeting addresses, what an agent searched for
+  or your API key: calls appear by id.
   Debug lines are written there only if you turn them on (see **Logs** under
   [Troubleshooting](#troubleshooting)).
 - If "Desktop & Documents Folders" syncs to iCloud Drive, macOS uploads `~/Documents/Kan` like any
   other document. Kan's welcome guide and Settings › General warn about it and offer `~/Kan`, a
   folder iCloud doesn't sync. Decide before your first call: what iCloud has uploaded stays there.
-- Recording laws differ by place. Telling people you're recording is the decent default.
+- Recording laws differ by place: ask everyone before you record (see
+  [Ask before you record](#ask-before-you-record)).
 
 ## Troubleshooting
 
@@ -386,7 +490,9 @@ command with `KAN_DEBUG=1`. Debug builds (`make app CONFIG=debug`) always write 
 Turn off Launch at login in Kan's Settings, quit Kan, delete `/Applications/Kan.app`, and run
 `tccutil reset All com.nahian.Kan`. Your transcripts stay in `~/Documents/Kan`. Models, settings,
 audio and the signing identity are in `~/Library/Application Support/Kan`; logs are in
-`~/Library/Logs/Kan`.
+`~/Library/Logs/Kan`. An OpenAI API key you saved is in your login keychain as
+"Kan — OpenAI API key": remove it in Settings › OpenAI before you quit Kan, or later in Keychain
+Access.
 
 ## Known limitations
 
@@ -405,6 +511,7 @@ audio and the signing identity are in `~/Library/Application Support/Kan`; logs 
 | `KanAudio` | library | Core Audio process taps, microphone capture, WAV writing, recorder, permissions, echo gate, m4a archiving |
 | `KanDetect` | library | Audio-client monitor, owner mapping, call state machine, browser meeting names |
 | `KanTranscribe` | library | whisper.cpp engine, VAD, Bangla/English routing, FluidAudio diarization, model store, pipeline |
+| `KanAI` | library | OpenAI client for the optional title ideas and summaries; the API key in the Keychain |
 | `KanAgent` | library | MCP server and CLI commands |
 | `CWhisper` | C module | whisper.cpp v1.9.5 headers; links `Vendor/whisper/lib/*.a` |
 | `KanApp` | app | SwiftUI menu-bar app (bundled as `Kan.app`, executable `KanApp`) |

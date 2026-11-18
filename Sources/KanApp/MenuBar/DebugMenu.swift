@@ -1,8 +1,9 @@
 import SwiftUI
 import KanCore
 
-/// Debug ▸ (mock services, or KAN_DEBUG=1): simulates calls through the mock detector and shows
-/// sample prompts, so every flow can be tried without a real call.
+/// Debug ▸ (mock services, or KAN_DEBUG=1): simulates calls through the mock detector, OpenAI
+/// failures through the mock assistant, and shows sample prompts, so every flow can be tried
+/// without a real call.
 struct DebugMenu: View {
     @Environment(AppModel.self) private var model
     let close: (() -> Void) -> Void
@@ -64,6 +65,16 @@ struct DebugMenu: View {
                     close { if let newest = model.summaries.first { model.labelNow(newest.id) } }
                 }
                 .disabled(model.summaries.isEmpty)
+            }
+            if let assistant = model.services.assistant as? MockAssistant {
+                Section("OpenAI (mock; any key works)") {
+                    Button("Fail every request (out of credit)") { assistant.setStandingFailure(.noCredit) }
+                    Button("Answer requests normally") { assistant.setStandingFailure(nil) }
+                    Button("Suggest titles for the newest call") {
+                        close { if let newest = model.summaries.first { model.suggestTitles(newest.id) } }
+                    }
+                    .disabled(model.summaries.isEmpty || !model.apiKeyState.isSaved)
+                }
             }
             Section("Files") {
                 Button("Reveal logs") { model.environment.openURL(KanPaths.logs) }

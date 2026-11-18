@@ -100,6 +100,8 @@ public struct SearchQuery: Sendable, Equatable {
 
 public enum SearchField: String, Sendable, Codable {
     case title, notes, tags, transcript, bookmark
+    /// The summary OpenAI wrote (`CallRecord.ai.summary`): its overview or a list item.
+    case summary
 }
 
 public struct SearchHit: Sendable, Hashable, Identifiable {
@@ -329,7 +331,8 @@ public final class LibraryStore: @unchecked Sendable {
     /// lose changes made concurrently (e.g. a transcript arriving from the processing queue).
     ///
     /// Text is stored NFC; tags are trimmed, de-duplicated and lose a leading "#"; an empty title
-    /// becomes the suggested title. Throws `LibraryError.invalidFolderName` for folders like "..".
+    /// becomes the suggested title; an empty `ai` is removed. Throws `LibraryError.invalidFolderName`
+    /// for folders like "..".
     @discardableResult
     public func save(_ record: CallRecord) throws -> CallFiles {
         let files: CallFiles = try locked {
@@ -622,9 +625,9 @@ public final class LibraryStore: @unchecked Sendable {
 
     // MARK: Search
 
-    /// Searches titles, tags, notes, bookmarks and transcripts. See `SearchQuery` for the syntax.
-    /// Returns one hit per matching field (one per matching transcript segment), best first:
-    /// title > tags > notes > bookmark > transcript, then more matched terms, then newer calls.
+    /// Searches titles, tags, notes, bookmarks, summaries and transcripts. See `SearchQuery` for the
+    /// syntax. Returns one hit per matching field (one per matching transcript segment), best first:
+    /// title > tags > notes > bookmark > summary > transcript, then more matched terms, then newer calls.
     /// Without text, lists the calls passing the filters (newest first) as title hits whose snippet
     /// is the call's preview. `limit` ≤ 0 means no limit.
     public func search(_ query: SearchQuery) -> [SearchHit] {
@@ -1044,7 +1047,31 @@ public final class LibraryStore: @unchecked Sendable {
         }
         for i in r.segments.indices { r.segments[i].text = r.segments[i].text.nfc }
         for i in r.bookmarks.indices { r.bookmarks[i].note = r.bookmarks[i].note.nfc }
+        r.ai = normalized(r.ai)
         return r
+    }
+
+    /// OpenAI's text is stored NFC too. Titles are single-line like the call's title, so a title
+    /// Kan applied keeps comparing equal to `appliedTitle`; blank items are dropped, and insights
+    /// with nothing left (or none this build could read) are removed.
+    private static func normalized(_ input: CallInsights?) -> CallInsights? {
+        guard var ai = input else { return nil }
+        if var ideas = ai.titleSuggestions {
+            ideas.titles = ideas.titles.compactMap { $0.nfc.singleLine.nonEmptyTrimmed }
+            ai.titleSuggestions = ideas
+        }
+        ai.appliedTitle = ai.appliedTitle.flatMap { $0.nfc.singleLine.nonEmptyTrimmed }
+        if var summary = ai.summary {
+            func clean(_ items: [String]) -> [String] { items.compactMap(\.nonEmptyTrimmed) }
+            summary.overview = summary.overview.nfc.trimmingCharacters(in: .whitespacesAndNewlines)
+            summary.keyPoints = clean(summary.keyPoints)
+            summary.ideas = clean(summary.ideas)
+            summary.decisions = clean(summary.decisions)
+            summary.actionItems = clean(summary.actionItems)
+            summary.openQuestions = clean(summary.openQuestions)
+            ai.summary = summary
+        }
+        return ai.isEmpty ? nil : ai
     }
 
     private func writeIndexesLoggingLocked() {

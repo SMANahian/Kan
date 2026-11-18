@@ -51,6 +51,7 @@ struct LibraryAlert: Identifiable {
         case deleteAudio(CallID)
         case deleteFolder(String)
         case mergeSpeakers(CallID, from: String, into: String)
+        case removeSummary(CallID)
     }
 
     let id = UUID()
@@ -65,12 +66,13 @@ struct LibraryAlert: Identifiable {
         case .deleteAudio: return "Delete Audio"
         case .deleteFolder: return "Delete Folder"
         case .mergeSpeakers: return "Merge"
+        case .removeSummary: return "Remove Summary"
         }
     }
 
     var isDestructive: Bool {
         switch kind {
-        case .deleteCalls, .deleteAudio, .deleteFolder: return true
+        case .deleteCalls, .deleteAudio, .deleteFolder, .removeSummary: return true
         case .message, .mergeSpeakers: return false
         }
     }
@@ -510,6 +512,13 @@ final class LibraryWindowModel {
                              kind: .deleteAudio(id))
     }
 
+    func requestRemoveSummary(_ id: CallID) {
+        alert = LibraryAlert(title: "Remove the summary?",
+                             message: "OpenAI's summary of “\(summaryByID[id]?.title ?? "this call")” is removed from the call's "
+                                 + "files. Writing it again sends the transcript to OpenAI again.",
+                             kind: .removeSummary(id))
+    }
+
     func requestMerge(_ callID: CallID, from: Speaker, into: Speaker) {
         alert = LibraryAlert(title: "Merge “\(from.name)” into “\(into.name)”?",
                              message: "Everything “\(from.name)” said in this call will be attributed to “\(into.name)”.",
@@ -535,6 +544,9 @@ final class LibraryWindowModel {
             deleteFolder(path)
         case .mergeSpeakers(let callID, let from, let into):
             app.mergeSpeakers(callID, from: from, into: into)
+        case .removeSummary(let id):
+            app.removeSummary(id)
+            showToast("Summary removed", systemImage: "trash")
         }
     }
 

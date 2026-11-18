@@ -26,6 +26,12 @@ struct LabelDraft: Equatable {
         case title, folder, tags, notes, starred
     }
 
+    /// The panel's text fields (`text(of:in:)`, `setText(_:of:in:)`).
+    enum TextInput: Hashable {
+        case title, folder, notes
+        case speakerName(String)
+    }
+
     struct SpeakerRename: Equatable {
         var speakerID: String
         /// "" restores the automatic "Speaker N".
@@ -120,6 +126,38 @@ struct LabelDraft: Equatable {
     }
 
     func remembersVoice(of speakerID: String) -> Bool { rememberVoice[speakerID] ?? true }
+
+    // MARK: Text fields
+    //
+    // SwiftUI's TextField writes the text it shows back through its binding when it gains or loses
+    // focus, and again after the value changed under it (the panel focuses the title as it opens).
+    // That write is no edit: taken as one, it would freeze an untouched field — Kan's title idea,
+    // the names typed for the speakers and the library window's changes would stop showing, Save
+    // would write the stale value back, and a recognized voice would count as confirmed. So the
+    // panel's text fields read and write through these, which ignore a write of what the field
+    // shows. Chips, menus and shortcuts call the setters above: a value picked there is a choice,
+    // even the one already shown.
+
+    /// What `input` shows. The title is `title(for:)`, or what was typed before the call was read.
+    func text(of input: TextInput, in record: CallRecord?) -> String {
+        switch input {
+        case .title: return record.map(title(for:)) ?? typedTitle ?? ""
+        case .folder: return folder
+        case .notes: return notes
+        case .speakerName(let id): return speakerNames[id] ?? ""
+        }
+    }
+
+    /// `input`'s binding wrote `value`: an edit, unless it's what the field shows.
+    mutating func setText(_ value: String, of input: TextInput, in record: CallRecord?) {
+        guard value != text(of: input, in: record) else { return }
+        switch input {
+        case .title: setTitle(value)
+        case .folder: setFolder(value)
+        case .notes: setNotes(value)
+        case .speakerName(let id): setSpeakerName(value, for: id)
+        }
+    }
 
     // MARK: Results
 

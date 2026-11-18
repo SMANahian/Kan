@@ -56,6 +56,13 @@ final class LibraryCallDetailModel {
         case failed(String)
     }
 
+    /// What OpenAI's text is compared with to tell whether it's outdated.
+    private struct OutdatedInputs: Equatable {
+        var ai: CallInsights?
+        var segments: [TranscriptSegment]
+        var speakers: [Speaker]
+    }
+
     static let minFontSize = 12.0
     static let maxFontSize = 24.0
 
@@ -72,6 +79,11 @@ final class LibraryCallDetailModel {
     private(set) var colorSlots: [String: Int] = [:]
     /// The kept audio (or the raw recording) exists, so the call can be transcribed again.
     private(set) var canRetranscribe = false
+    /// OpenAI's summary / title ideas were written from another version of the transcript.
+    /// Worked out when what they depend on changes (`refreshOutdated`), not on every redraw: it
+    /// hashes the whole transcript.
+    private(set) var summaryOutdated = false
+    private(set) var titleIdeasOutdated = false
 
     private(set) var findQuery = ""
     private(set) var findState = LibraryFindState()
@@ -79,9 +91,14 @@ final class LibraryCallDetailModel {
     private(set) var transcriptFocusToken: UUID?
 
     var titleDraft = ""
-    var isEditingTitle = false
+    /// The title field has focus (`beginEditingTitle`).
+    private(set) var isEditingTitle = false
     private(set) var notesDraft = ""
 
+    /// The title the field showed when editing began; an untouched draft follows the stored title.
+    @ObservationIgnored private var titleEditBase: String?
+    /// What `summaryOutdated` / `titleIdeasOutdated` were worked out from.
+    @ObservationIgnored private var outdatedInputs: OutdatedInputs?
     @ObservationIgnored private var notesSaveTask: Task<Void, Never>?
     @ObservationIgnored private var findTask: Task<Void, Never>?
     @ObservationIgnored private var resyncTask: Task<Void, Never>?
@@ -150,15 +167,35 @@ final class LibraryCallDetailModel {
         let previous = record
         record = loaded
         phase = .loaded
-        if !isEditingTitle { titleDraft = loaded.title }
+        if !isEditingTitle {
+            titleDraft = loaded.title
+        } else if titleDraft == titleEditBase {
+            // Focused but untouched (OpenAI's idea arrived meanwhile): show the new title, and
+            // leaving the field writes nothing back.
+            titleDraft = loaded.title
+            titleEditBase = loaded.title
+        }
         if notesSaveTask == nil { notesDraft = loaded.notes }
         if previous == nil || previous?.segments != loaded.segments || previous?.speakers != loaded.speakers {
             rebuildTranscript()
         }
+        refreshOutdated()
         if previous == nil || previous?.audio != loaded.audio || previous?.status != loaded.status {
             loadAudio(resume: previous != nil)
         }
         applyPendingFocus()
+    }
+
+    /// Works the outdated flags out again when the summary, the ideas or the transcript they're
+    /// compared with changed: after a reload, and after an edit here replaced `record` (a speaker
+    /// renamed, a line moved), whose reload then finds nothing new.
+    private func refreshOutdated() {
+        guard let record else { return }
+        let inputs = OutdatedInputs(ai: record.ai, segments: record.segments, speakers: record.speakers)
+        guard inputs != outdatedInputs else { return }
+        outdatedInputs = inputs
+        summaryOutdated = record.isSummaryOutdated
+        titleIdeasOutdated = record.areTitleIdeasOutdated
     }
 
     /// Re-reads the record a moment after an edit, in case `AppModel` changed more than we did
@@ -272,6 +309,9 @@ final class LibraryCallDetailModel {
     }
 
     func setFindQuery(_ text: String) {
+        // The field writes its text back when it gains or loses focus: that would start over at
+        // the first match and scroll there.
+        guard text != findQuery else { return }
         findQuery = text
         findTask?.cancel()
         findTask = Task { [weak self] in
@@ -347,27 +387,43 @@ final class LibraryCallDetailModel {
         let transcriptChanged = local.segments != record?.segments || local.speakers != record?.speakers
         record = local
         if transcriptChanged { rebuildTranscript() }
+        refreshOutdated()
         app.update(callID, markLabeled: markLabeled) { change(&$0) }
         scheduleResync()
     }
 
+    /// The title field got focus. The draft keeps what's typed across reloads; untouched, it
+    /// follows the stored title.
+    func beginEditingTitle() {
+        guard !isEditingTitle else { return }
+        isEditingTitle = true
+        titleEditBase = titleDraft
+    }
+
+    /// Return, or the field lost focus: renames the call when the draft differs from what the
+    /// field showed when editing began — the user's own title, which new title ideas never replace.
     func commitTitle() {
+        let base = titleEditBase
         isEditingTitle = false
+        titleEditBase = nil
         guard let record else { return }
         let title = LibraryTextMatch.singleLine(titleDraft)
-        guard !title.isEmpty, title != record.title else {
+        guard !title.isEmpty, title != (base.map(LibraryTextMatch.singleLine) ?? record.title) else {
             titleDraft = record.title
             return
         }
-        mutate(markLabeled: true) { $0.title = title }
+        mutate(markLabeled: true) { AppModel.setUserTitle(title, of: &$0) }
     }
 
     func revertTitle() {
         isEditingTitle = false
+        titleEditBase = nil
         titleDraft = record?.title ?? ""
     }
 
     func editNotes(_ text: String) {
+        // A write that changes nothing (a text view writing its text back) starts no save.
+        guard text != notesDraft else { return }
         notesDraft = text
         notesSaveTask?.cancel()
         notesSaveTask = Task { [weak self] in
@@ -432,8 +488,56 @@ final class LibraryCallDetailModel {
     }
 
     func jump(to bookmark: Bookmark) {
-        player.seek(to: bookmark.time)
-        scroll(toTime: bookmark.time)
+        go(to: bookmark.time)
+    }
+
+    /// Plays from `time` (paused stays paused) and scrolls the transcript there: bookmarks, the
+    /// summary's timestamps.
+    func go(to time: Double) {
+        player.seek(to: time)
+        scroll(toTime: time)
+    }
+
+    // MARK: OpenAI
+
+    /// The title menu: an idea becomes the title (as if typed, so new ideas won't replace it).
+    func applyTitleIdea(_ idea: String) {
+        guard var local = record else { return }
+        let title = LibraryTextMatch.singleLine(idea)
+        guard !title.isEmpty, title != local.title || local.ai?.appliedTitle != nil else { return }
+        app.applyTitleIdea(callID, title)
+        AppModel.setUserTitle(title, of: &local)
+        local.labeled = true
+        record = local
+        // Picked with the field focused (the menu leaves focus there): editing goes on from the idea.
+        if isEditingTitle { titleEditBase = title }
+        titleDraft = title
+        scheduleResync()
+    }
+
+    func suggestTitles() {
+        app.suggestTitles(callID)
+    }
+
+    /// Summarize, Regenerate and Retry.
+    func summarize() {
+        app.summarize(callID)
+    }
+
+    func cancelSummary() {
+        app.cancelAIJob(.summary, for: callID)
+    }
+
+    /// Asks first: writing it again is another request.
+    func requestRemoveSummary() {
+        window.requestRemoveSummary(callID)
+    }
+
+    func copySummary() {
+        guard let record, let text = LibrarySummaryText.clipboardText(record) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        window.showToast("Copied the summary", systemImage: "doc.on.doc")
     }
 
     // MARK: Speakers
@@ -461,6 +565,7 @@ final class LibraryCallDetailModel {
         }
         self.record = local
         rebuildTranscript()
+        refreshOutdated()
         scheduleResync()
     }
 
@@ -499,6 +604,7 @@ final class LibraryCallDetailModel {
         local.segments[index].speakerID = speakerID
         self.record = local
         rebuildTranscript()
+        refreshOutdated()
         scheduleResync()
     }
 

@@ -127,8 +127,9 @@ private struct LibraryBookmarkRow: View {
         .onChange(of: focused) { _, isFocused in
             if !isFocused { commit() }
         }
-        .onChange(of: bookmark.note) { _, newValue in
-            if !focused { note = newValue }
+        .onChange(of: bookmark.note) { oldValue, newValue in
+            // Focused but untouched, it follows too: leaving the field then writes nothing back.
+            if !focused || note == oldValue { note = newValue }
         }
     }
 

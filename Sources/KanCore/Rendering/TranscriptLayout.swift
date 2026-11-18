@@ -56,6 +56,11 @@ enum TranscriptLayout {
         return "\(start)–\(end)"
     }
 
+    /// "17 Nov 2026" in the given time zone (the call's).
+    static func day(_ date: Date, timeZone identifier: String) -> String {
+        formatter("d MMM yyyy", LibraryNaming.timeZone(identifier)).string(from: date)
+    }
+
     /// ISO-8601 with the call's own UTC offset, no fractional seconds: 2026-11-14T10:00:12-05:00.
     static func isoDate(_ date: Date, timeZone identifier: String) -> String {
         let f = ISO8601DateFormatter()
@@ -139,6 +144,64 @@ enum TranscriptLayout {
             out.append(character)
         }
         return out
+    }
+
+    /// `escapeInline`, except that timestamps as Kan writes them ("[00:12:34]", "[00:12:34–00:13:10]")
+    /// stay as they are: without "(" or ":" after them they can't make a link.
+    static func escapeInlineKeepingTimestamps(_ text: String) -> String {
+        var out = ""
+        var rest = Substring(text)
+        while let character = rest.first {
+            if character == "[", let length = timestampLength(rest) {
+                out += rest.prefix(length)
+                rest = rest.dropFirst(length)
+                continue
+            }
+            if "\\*_`[]<".contains(character) { out.append("\\") }
+            out.append(character)
+            rest = rest.dropFirst()
+        }
+        return out
+    }
+
+    /// A paragraph or list item written by OpenAI (single-line text): it may cite "[00:12:34]"
+    /// timestamps but can't start a block, emphasis, code, a link or HTML.
+    static func escapeAIText(_ text: String) -> String {
+        escapeParagraphStart(escapeInlineKeepingTimestamps(text))
+    }
+
+    /// The length of the "[h:mm]", "[hh:mm:ss]" or "[hh:mm:ss–hh:mm:ss]" timestamp `text` starts
+    /// with, or nil (also when "(" or ":" follows it).
+    private static func timestampLength(_ text: Substring) -> Int? {
+        let characters = Array(text.prefix(24))     // "[00:00:00–00:00:00]" and the character after it
+        var i = 1
+        func digits(_ minimum: Int, _ maximum: Int) -> Bool {
+            var count = 0
+            while i < characters.count, count < maximum, characters[i].isASCII, characters[i].isWholeNumber {
+                i += 1
+                count += 1
+            }
+            return count >= minimum
+        }
+        func clock() -> Bool {
+            guard digits(1, 2) else { return false }
+            var groups = 0
+            while groups < 2, i < characters.count, characters[i] == ":" {
+                i += 1
+                guard digits(2, 2) else { return false }
+                groups += 1
+            }
+            return groups > 0
+        }
+        guard characters.first == "[", clock() else { return nil }
+        if i < characters.count, characters[i] == "–" || characters[i] == "-" {
+            i += 1
+            guard clock() else { return nil }
+        }
+        guard i < characters.count, characters[i] == "]" else { return nil }
+        i += 1
+        if i < characters.count, characters[i] == "(" || characters[i] == ":" { return nil }
+        return i
     }
 
     /// Keeps a paragraph from being read as a heading, list, quote, rule, table or code fence.

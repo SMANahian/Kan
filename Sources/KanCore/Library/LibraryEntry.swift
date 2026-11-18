@@ -21,6 +21,9 @@ struct SearchDocument: Sendable {
     let tags: String
     let notes: String
     let bookmarks: [BookmarkText]
+    /// The summary's overview and list items (single-line NFC), each searched on its own so a
+    /// phrase can't match across two of them.
+    let summary: [String]
     let speakerNames: [String]
     /// Every visible segment's single-line NFC text, each followed by "\n" (so terms, which never
     /// contain a newline, can't match across segments).
@@ -37,6 +40,7 @@ struct SearchDocument: Sendable {
                 let text = b.note.nfc.singleLine
                 return text.isEmpty ? nil : BookmarkText(time: b.time, text: text)
             }
+        summary = (record.ai?.summary?.texts ?? []).map { $0.nfc.singleLine }.filter { !$0.isEmpty }
 
         var names: [String] = []
         var nameIndex: [String: Int32] = [:]

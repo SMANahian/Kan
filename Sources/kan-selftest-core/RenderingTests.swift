@@ -409,7 +409,213 @@ func renderingTests() -> TestSuite {
         try expect(md.contains("\n\\> not a quote"), md)
     }
 
+    suite.test("the summary: its documented Markdown shape, after the header and before the notes") {
+        let plain = advisorRecord()
+        var record = summarizedRecord()
+        record.notes = "My notes"
+        let md = TranscriptRenderer.markdown(record)
+        try expect(md.hasSuffix("""
+            # Advisor meeting – augmentation idea
+            Sat 14 Nov 2026, 10:00–10:42 · Zoom · 42 min · Nahian (me), Prof. Rahman
+
+            ## Summary
+            Nahian and Prof. Rahman discussed data augmentation for Bangla ASR [00:00:05].
+
+            They agreed to start with SpecAugment.
+
+            ### Key points
+            - Speed perturbation is the baseline [00:00:21]
+
+            ### Ideas
+            - Pseudo-labeling with the Bengali.AI model
+
+            ### Action items
+            - Nahian: send the paper draft by Friday
+
+            ### Open questions
+            - How many hours of speech are needed?
+
+            _Summary written by OpenAI (gpt-6.1-terra) on 17 Nov 2026; it can contain mistakes._
+
+            ## Notes
+            My notes
+
+            ## Transcript
+            **Nahian** [00:00:05]
+            So I was thinking…
+
+            **Prof. Rahman** [00:00:21]
+            That's interesting…
+
+            """), md)
+        // The front matter (keys agents rely on) is the same with or without a summary.
+        try expectEqual(try MiniYAML.frontMatter(md).map { "\($0.key)=\($0.value)" },
+                        try MiniYAML.frontMatter(TranscriptRenderer.markdown(plain)).map { "\($0.key)=\($0.value)" })
+        try expect(md.contains("\n" + (try expectNotNil(TranscriptRenderer.summaryMarkdown(record)))), "summaryMarkdown is that section")
+        record.notes = ""
+        try expectEqual(TranscriptRenderer.markdown(record, options: RenderOptions(includeSummary: false)),
+                        TranscriptRenderer.markdown(plain))
+        try expectEqual(TranscriptRenderer.summaryMarkdown(plain), nil)
+        record.ai?.summary = Fixture.summary(overview: "  ", keyPoints: ["", " \n "])
+        try expectEqual(TranscriptRenderer.markdown(record), TranscriptRenderer.markdown(plain), "nothing to show: no section")
+    }
+
+    suite.test("the summary says when it's outdated, shortened, or by whom and when if known") {
+        var record = summarizedRecord()
+        try expect(!TranscriptRenderer.markdown(record).contains("The transcript changed"))
+        record.speakers[1].name = "Dr. Rahman"                        // renamed after it was written
+        try expect(TranscriptRenderer.markdown(record).contains(
+            "_Summary written by OpenAI (gpt-6.1-terra) on 17 Nov 2026; it can contain mistakes._\n"
+                + "_The transcript changed after this summary was written._\n\n## Transcript"), TranscriptRenderer.markdown(record))
+        record = summarizedRecord()
+        record.segments[0].text = "So I was thinking about it…"     // a line edited
+        try expect(TranscriptRenderer.markdown(record).contains("_The transcript changed after this summary was written._"))
+
+        record = summarizedRecord()
+        record.ai?.summary?.shortened = true
+        try expect(TranscriptRenderer.markdown(record).contains(
+            "it can contain mistakes._\n_The call was too long to send whole, so the middle of the transcript was left out._\n"))
+        record.ai?.summary?.model = " "
+        record.ai?.summary?.generatedAt = .distantPast             // what an unreadable date decodes to
+        try expect(TranscriptRenderer.markdown(record).contains("\n_Summary written by OpenAI; it can contain mistakes._\n"))
+        record.ai?.summary?.model = "my_model*v2"
+        try expect(TranscriptRenderer.markdown(record).contains("_Summary written by OpenAI (my\\_model\\*v2); it can"))
+        // The date is the call's own day: 03:00 UTC on 18 Nov is still 17 Nov in New York, not in Dhaka.
+        record.ai?.summary?.generatedAt = Fixture.date("2026-11-18T03:00:00Z")
+        try expect(TranscriptRenderer.markdown(record).contains("(my\\_model\\*v2) on 17 Nov 2026;"))
+        record.timeZone = "Asia/Dhaka"
+        try expect(TranscriptRenderer.markdown(record).contains("(my\\_model\\*v2) on 18 Nov 2026;"))
+    }
+
+    suite.test("OpenAI's text can't break the document; timestamps stay readable") {
+        var record = advisorRecord()
+        record.notes = "Notes"
+        let fingerprint = CallInsights.fingerprint(of: record)
+        record.ai = CallInsights(summary: Fixture.summary(
+            overview: "# Heading?\n\n```swift\n\n<!-- hides the rest\n\n1. first\n\n> quote\n\n---\n\n    indented\n\n"
+                + "[link]: http://x\n\n|a|b|\n\nline one\nline two\r\nline three",
+            keyPoints: ["- nested", "* star", "+ plus", "2) two", "~~~", "line one\nline two", "[00:12:34] keeps its time",
+                        "[00:12:34](http://x) is a link", "[00:12:34]: a definition?", "[0:5] short", "[1:02:03] long call",
+                        "**bold** and _em_ and `code` and <b>", "see [00:12:34–00:13:10] and [00:20:00]", "\\ backslash"],
+            fingerprint: fingerprint))
+        let md = TranscriptRenderer.markdown(record)
+        let section = try expectNotNil(TranscriptRenderer.summaryMarkdown(record))
+        try expectEqual(section, """
+            ## Summary
+            \\# Heading?
+
+            \\`\\`\\`swift
+
+            \\<!-- hides the rest
+
+            1\\. first
+
+            \\> quote
+
+            \\---
+
+            indented
+
+            \\[link\\]: http://x
+
+            \\|a|b|
+
+            line one line two line three
+
+            ### Key points
+            - \\- nested
+            - \\* star
+            - \\+ plus
+            - 2\\) two
+            - \\~~~
+            - line one line two
+            - [00:12:34] keeps its time
+            - \\[00:12:34\\](http://x) is a link
+            - \\[00:12:34\\]: a definition?
+            - \\[0:5\\] short
+            - [1:02:03] long call
+            - \\*\\*bold\\*\\* and \\_em\\_ and \\`code\\` and \\<b>
+            - see [00:12:34–00:13:10] and [00:20:00]
+            - \\\\ backslash
+
+            _Summary written by OpenAI (gpt-6.1-terra) on 17 Nov 2026; it can contain mistakes._
+
+            """)
+        // The rest of the document is untouched: the same headings, front matter and transcript.
+        let lines = md.components(separatedBy: "\n")
+        try expectEqual(lines.filter { $0.hasPrefix("#") }, ["# Advisor meeting – augmentation idea", "## Summary", "### Key points",
+                                                            "## Notes", "## Transcript"])
+        try expect(!lines.contains { $0.hasPrefix("```") || $0.hasPrefix("~~~") || $0.hasPrefix("<") || $0.hasPrefix(">") }, md)
+        try expectEqual(try MiniYAML.dictionary(md).count, 14)
+        try expect(md.hasSuffix("## Notes\nNotes\n\n## Transcript\n**Nahian** [00:00:05]\nSo I was thinking…\n\n**Prof. Rahman** [00:00:21]\nThat's interesting…\n"))
+    }
+
+    suite.test("plain text: a Summary block after the header; options turn the summary and status notes off") {
+        var record = summarizedRecord()
+        record.notes = "My notes"
+        try expectEqual(TranscriptRenderer.plainText(record), """
+            Advisor meeting – augmentation idea
+            Sat 14 Nov 2026, 10:00–10:42 · Zoom · 42 min · Nahian (me), Prof. Rahman
+
+            Summary:
+            Nahian and Prof. Rahman discussed data augmentation for Bangla ASR [00:00:05].
+
+            They agreed to start with SpecAugment.
+
+            Key points:
+            - Speed perturbation is the baseline [00:00:21]
+
+            Ideas:
+            - Pseudo-labeling with the Bengali.AI model
+
+            Action items:
+            - Nahian: send the paper draft by Friday
+
+            Open questions:
+            - How many hours of speech are needed?
+
+            Summary written by OpenAI (gpt-6.1-terra) on 17 Nov 2026; it can contain mistakes.
+
+            Notes:
+            My notes
+
+            Transcript:
+            [00:00:05] Nahian: So I was thinking…
+            [00:00:21] Prof. Rahman: That's interesting…
+
+            """)
+        try expect(!TranscriptRenderer.plainText(record, options: RenderOptions(includeSummary: false)).contains("Summary"))
+        let transcriptOnly = RenderOptions(includeFrontMatter: false, includeNotes: false, includeBookmarks: false, includeSummary: false)
+        try expectEqual(TranscriptRenderer.plainText(record, options: transcriptOnly),
+                        "[00:00:05] Nahian: So I was thinking…\n[00:00:21] Prof. Rahman: That's interesting…\n")
+        try expectEqual(try TranscriptRenderer.render(record, format: .text), Data(TranscriptRenderer.plainText(record).utf8))
+        // Prompts for AI agents carry the transcript, not the summary.
+        let prompt = TranscriptRenderer.aiPrompt(record, template: PromptTemplate(id: "t", name: "t", body: "{{transcript}}"), userName: "Nahian")
+        try expect(!prompt.contains("Summary") && !prompt.contains("SpecAugment"), prompt)
+
+        record.status = .processing
+        try expect(TranscriptRenderer.plainText(record).contains("(A new transcript is being generated; this is the previous one.)"))
+        try expect(!TranscriptRenderer.plainText(record, options: RenderOptions(includeStatusNote: false)).contains("previous one"))
+        try expect(!TranscriptRenderer.markdown(record, options: RenderOptions(includeStatusNote: false)).contains("previous one"))
+        record.segments = []
+        try expect(TranscriptRenderer.markdown(record, options: RenderOptions(includeStatusNote: false)).hasSuffix("## Transcript\n"))
+    }
+
     return suite
+}
+
+/// The advisor call with a summary written from its current transcript.
+private func summarizedRecord() -> CallRecord {
+    var record = advisorRecord()
+    record.ai = CallInsights(summary: Fixture.summary(
+        overview: "Nahian and Prof. Rahman discussed data augmentation for Bangla ASR [00:00:05].\n\n"
+            + "They agreed to start with SpecAugment.",
+        keyPoints: ["Speed perturbation is the baseline [00:00:21]", "  "],
+        ideas: ["Pseudo-labeling with the Bengali.AI model"],
+        actionItems: ["Nahian: send the paper draft by Friday"],
+        openQuestions: ["How many hours of speech are needed?"],
+        fingerprint: CallInsights.fingerprint(of: record)))
+    return record
 }
 
 extension String {

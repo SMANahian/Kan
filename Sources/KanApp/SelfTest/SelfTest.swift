@@ -3,7 +3,8 @@ import KanCore
 
 /// `KanApp --self-test`: runs the app's flows headlessly against the real KanCore library and
 /// processing queue, with mock services on a virtual clock. No windows, status items, hot keys,
-/// login items, pasteboard or permission prompts. Prints ✓/✗ lines and exits 0 (all passed) or 1.
+/// login items, pasteboard, permission prompts, network or Keychain (OpenAI is a mock, the API key
+/// lives in memory). Prints ✓/✗ lines and exits 0 (all passed) or 1.
 ///
 /// Everything happens in a fresh temporary KAN_HOME (set before anything touches KanPaths), so
 /// the real ~/Documents/Kan and ~/Library/Application Support/Kan are never used.
@@ -107,7 +108,8 @@ final class SelfTestRunner {
     func makeModel() -> (AppModel, HeadlessEffects) {
         let effects = HeadlessEffects()
         let clock = self.clock
-        let services = MockServices.make(clock: clock, transcriptionStepSeconds: 0.005, modelDownloadSeconds: 0.02)
+        let services = MockServices.make(clock: clock, transcriptionStepSeconds: 0.005, modelDownloadSeconds: 0.02,
+                                         aiSeconds: 0)
         let model = AppModel(services: services, settingsStore: SettingsStore(), voiceprints: VoiceprintStore(),
                              environment: .headless(now: { clock.now() }, effects: effects))
         return (model, effects)
@@ -178,6 +180,7 @@ final class SelfTestRunner {
         await labelQueueFlow(model, detector)
         await labelWaitFlow(model, detector)
         await labelPanelSaveFlow(model, detector)
+        await labelPanelEchoFlow(model, detector)
         await processingCleanupFlow(model, detector)
         await modelsWaitingFlow(model, detector)
         await voiceSamplesFlow(model, detector)
@@ -192,6 +195,7 @@ final class SelfTestRunner {
         libraryLocationFlow(model)
         await cloudLibraryFlow(model, effects)
         await logPrivacyFlow(model, detector)
+        await openAIFlows(model, detector)
         warmUpBookkeepingFlow()
         await recoveryAndQuitFlow(previous: model)
         await libraryAccessFlow()
@@ -264,6 +268,15 @@ final class SelfTestRunner {
 
     func waitUntilReady(_ model: AppModel, _ id: CallID) async -> Bool {
         await eventually(timeout: 15) { model.record(id)?.status == .ready && model.processing[id] == nil }
+    }
+
+    /// What SwiftUI does to the label panel's text fields whenever one gains or loses focus (the
+    /// panel focuses the title as it opens) and after a value changed under a focused field: each
+    /// writes the text it shows back through its binding (seen in a probe built like the panel).
+    func echoFields(_ draft: inout LabelDraft, _ record: CallRecord?) {
+        var inputs: [LabelDraft.TextInput] = [.title, .folder, .notes]
+        inputs += (record.map(LabelDraft.remoteSpeakers(of:)) ?? []).map { .speakerName($0.id) }
+        for input in inputs { draft.setText(draft.text(of: input, in: record), of: input, in: record) }
     }
 
     // MARK: Flows
@@ -836,6 +849,72 @@ final class SelfTestRunner {
         check(resaved?.folder == "Research/Thesis" && resaved?.starred == false && resaved?.tags == ["library", "panel"]
               && resaved?.notes == "Edited in the library" && resaved?.title == "Panel title",
               "the panel's own changes are saved, the rest kept", "\(resaved?.tags ?? [])")
+        model.deleteCall(id, deleteAudio: true)
+    }
+
+    /// SwiftUI's text fields write back what they show on focus and blur (`echoFields`): the label
+    /// panel must not take that for typing, or untouched fields stop following the stored call
+    /// and Save writes their stale values back.
+    func labelPanelEchoFlow(_ model: AppModel, _ detector: MockCallDetector) async {
+        section("Label panel: fields writing back what they show (focus, blur) edit nothing")
+        let start = clock.now()
+        var plain = CallRecord(id: CallID.generate(date: start), title: "", startedAt: start,
+                               endedAt: start.addingTimeInterval(60), source: CallSource(appName: "Zoom", platform: .zoom))
+        plain.speakers = [Speaker(id: Speaker.meID, name: "Nahian", isMe: true),
+                          Speaker(id: "s1", name: Speaker.defaultName(number: 1), isMe: false),
+                          Speaker(id: "s2", name: "Rahim", isMe: false, nameSource: .voiceprint)]
+        plain.title = TranscriptRenderer.suggestedTitle(for: plain)
+        var draft = LabelDraft(record: plain)
+        echoFields(&draft, plain)                   // the panel opens with the title focused
+        echoFields(&draft, plain)                   // …and the focus moves on
+        check(!draft.isEdited(.title) && !draft.isEdited(.folder) && !draft.isEdited(.notes) && draft.editedSpeakers.isEmpty
+              && draft.edits(for: plain) == LabelEdits(), "focusing and leaving every field edits nothing: Save writes only the label")
+        check(draft.speakerRenames(in: plain).isEmpty, "…and confirms no recognized voice (“Rahim” stays a guess)")
+
+        var named = plain
+        named.speakers[1].name = "Prof. Karim"
+        let following = TranscriptRenderer.suggestedTitle(for: named)
+        draft.setText("Prof. Karim", of: .speakerName("s1"), in: plain)     // typed
+        echoFields(&draft, plain)
+        check(draft.title(for: plain) == following && draft.edits(for: plain).title == following && !draft.isEdited(.title),
+              "the untouched title, focused again, still follows a typed speaker name", draft.title(for: plain))
+
+        var stored = plain
+        stored.folder = "Research"
+        stored.notes = "Edited in the library"
+        draft.refresh(from: stored)
+        echoFields(&draft, stored)                  // the focused field writes the new value back
+        check(draft.folder == "Research" && draft.notes == "Edited in the library"
+              && draft.edits(for: stored).folder == nil && draft.edits(for: stored).notes == nil,
+              "a folder and notes stored meanwhile still show in fields that were focused, and Save keeps them")
+        draft.setText("Research/Thesis", of: .folder, in: stored)
+        draft.setText("Advisor meeting", of: .title, in: stored)
+        check(draft.edits(for: stored).folder == "Research/Thesis" && draft.edits(for: stored).title == "Advisor meeting",
+              "what is really typed is an edit")
+
+        // The real panel's draft around Save, while the library window edits the same call.
+        guard let id = await recordZoomCall(model, detector, seconds: 25), await waitUntilReady(model, id),
+              let opened = model.record(id) else {
+            check(false, "call recorded and transcribed")
+            return
+        }
+        var panel = LabelDraft(record: opened)
+        echoFields(&panel, opened)
+        model.renameSpeaker(id, speakerID: "s2", to: "Rahman", rememberVoice: false)
+        model.update(id) { record in
+            record.folder = "Research"
+            record.notes = "Edited in the library"
+        }
+        if let edited = model.record(id) {
+            panel.refresh(from: edited)
+            echoFields(&panel, edited)
+        }
+        model.saveLabel(id, draft: panel)
+        let saved = model.record(id)
+        check(saved?.folder == "Research" && saved?.notes == "Edited in the library" && saved?.speaker("s2")?.name == "Rahman"
+              && saved?.title == opened.title && saved?.labeled == true,
+              "Save after focusing the fields keeps the library's folder, notes and speaker name, and the title",
+              "\(saved?.folder ?? "-") · \(saved?.speaker("s2")?.name ?? "-") · \(saved?.title ?? "-")")
         model.deleteCall(id, deleteAudio: true)
     }
 
@@ -1606,6 +1685,30 @@ final class SelfTestRunner {
         await settle()
         check(!history.of(live).contains(.processing), "saving it doesn't start a transcription on the way out",
               "\(history.of(live))")
+        if let assistant = model.services.assistant as? MockAssistant {
+            // A transcript that becomes ready while the last recording is saved, or a button: once
+            // quitting has begun, nothing more goes to OpenAI.
+            _ = await model.saveAPIKey(Self.testKey)
+            model.settings.aiSuggestTitles = true
+            model.settings.aiSummarize = true
+            let readyStart = clock.now()
+            let ready = CallRecord(id: CallID.generate(date: readyStart), title: "Zoom call", startedAt: readyStart,
+                                   endedAt: readyStart.addingTimeInterval(60), source: CallSource(appName: "Zoom", platform: .zoom),
+                                   status: .ready, speakers: [Speaker(id: Speaker.meID, name: "Nahian", isMe: true)],
+                                   segments: [TranscriptSegment(id: 0, start: 1, end: 4, speakerID: Speaker.meID, channel: .me,
+                                                                text: "Let's write down the plan.", language: "en")])
+            _ = try? model.library.save(ready)
+            let before = assistant.requests.count
+            model.transcriptDidBecomeReady(ready.id)
+            model.suggestTitles(ready.id)
+            model.summarize(ready.id)
+            await settle()
+            check(assistant.requests.count == before && model.aiJobs.isEmpty,
+                  "once quitting has begun, nothing new is sent to OpenAI (a transcript ready now, a button)")
+            model.settings.aiSuggestTitles = false
+            model.settings.aiSummarize = false
+            try? model.library.delete(ready.id, deleteAudio: true)
+        }
 
         // Orphans left by a crash: one with live.json, one deleted call (must stay deleted), and a
         // record stuck in .recording.

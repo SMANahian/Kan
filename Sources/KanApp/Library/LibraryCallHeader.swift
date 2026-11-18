@@ -1,8 +1,9 @@
 import SwiftUI
 import KanCore
 
-/// The top of a call: app icon, editable title (saved on Return or when the field loses focus; Esc
-/// reverts), star, the metadata line, folder menu and tags.
+/// The top of a call: app icon, editable title (saved on Return or when the field loses focus, if
+/// it was changed; Esc reverts) with OpenAI's title ideas, star, the metadata line, folder menu and
+/// tags.
 struct LibraryCallHeader: View {
     @Bindable var detail: LibraryCallDetailModel
     let window: LibraryWindowModel
@@ -27,6 +28,7 @@ struct LibraryCallHeader: View {
                             titleFocused = false
                         }
                         .help("Click to rename the call")
+                    LibraryTitleIdeasMenu(detail: detail, record: record)
                     Button {
                         detail.toggleStar()
                     } label: {
@@ -74,7 +76,7 @@ struct LibraryCallHeader: View {
             .padding(.bottom, 10)
             .onChange(of: titleFocused) { _, focused in
                 if focused {
-                    detail.isEditingTitle = true
+                    detail.beginEditingTitle()
                 } else if detail.isEditingTitle {
                     detail.commitTitle()
                 }
@@ -104,6 +106,70 @@ struct LibraryCallHeader: View {
         var line = "Transcribed on this Mac with " + info.modelsUsed.joined(separator: ", ")
         if let seconds = info.processingSeconds, seconds > 0 { line += " in " + KanTime.humanDuration(seconds) }
         return line
+    }
+}
+
+/// OpenAI's title ideas next to the title: pick one (it becomes your title, which new ideas won't
+/// replace) or ask for new ones. Shown while a key is saved, or when the call already has ideas.
+private struct LibraryTitleIdeasMenu: View {
+    let detail: LibraryCallDetailModel
+    let record: CallRecord
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let ideas = record.ai?.titleSuggestions?.titles ?? []
+        let job = model.aiJob(.titles, for: record.id)
+        let keySaved = model.apiKeyState.isSaved
+        if keySaved || !ideas.isEmpty {
+            HStack(spacing: 4) {
+                if job == .running {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("OpenAI is suggesting titles…")
+                }
+                Menu {
+                    if !ideas.isEmpty {
+                        Section(detail.titleIdeasOutdated ? "Title ideas (from an earlier transcript)" : "Title ideas") {
+                            ForEach(ideas, id: \.self) { idea in
+                                Button {
+                                    detail.applyTitleIdea(idea)
+                                } label: {
+                                    if idea == record.title {
+                                        Label(idea, systemImage: "checkmark")
+                                    } else {
+                                        Text(idea)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if case .failed(let error)? = job {
+                        Section {
+                            Text(error.message)
+                        }
+                    }
+                    if keySaved {
+                        Divider()
+                        Button(ideas.isEmpty ? "Suggest Titles with OpenAI" : "Suggest New Titles") { detail.suggestTitles() }
+                            .disabled(job == .running || !AppModel.hasTranscriptForOpenAI(record))
+                    }
+                } label: {
+                    Image(systemName: "sparkles")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(help(ideas: ideas, job: job))
+                .accessibilityLabel("Title ideas")
+            }
+        }
+    }
+
+    private func help(ideas: [String], job: AIJobState?) -> String {
+        if case .failed(let error)? = job { return error.message }
+        if job == .running { return "OpenAI is suggesting titles…" }
+        if !AppModel.hasTranscriptForOpenAI(record) && ideas.isEmpty { return "Title ideas need the transcript" }
+        return ideas.isEmpty ? "Suggest titles with OpenAI" : "Title ideas from OpenAI"
     }
 }
 

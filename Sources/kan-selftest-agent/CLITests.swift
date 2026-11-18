@@ -163,6 +163,42 @@ func cliTests() -> TestSuite {
         try expectContains(words.stdout, "# আম্মুর সাথে কথা", "title words are joined")
     }
 
+    suite.test("show, search, list and info with OpenAI summaries") {
+        let fixture = try AgentFixture.withInsights("cli-ai")
+        let id = IDs.summarized.rawValue
+        let overview = "Nahian and Rahim chose a tokenizer for the Bangla speech recognizer."
+        let md = await runCLI(["show", id], fixture)
+        try expectEqual(md.code, 0, md.stderr)
+        try expectContains(md.stdout, "· Nahian (me), Rahim\n\n## Summary\n\(overview)\n\n### Key points\n")
+        try expectContains(md.stdout.components(separatedBy: "## Transcript")[0], "_Summary written by OpenAI (gpt-6.1-terra)",
+                           "the summary comes before the transcript")
+        let txt = await runCLI(["show", id, "--format", "txt"], fixture)
+        try expectContains(txt.stdout, "\n\nSummary:\n\(overview)\n\nKey points:\n- Start from the Bengali.AI tokenizer [00:00:07]\n")
+        try expectContains(txt.stdout, "Action items:\n- Nahian: run the benchmark by Friday [00:00:13]\n")
+        let outdated = await runCLI(["show", IDs.outdated.rawValue], fixture)
+        try expectContains(outdated.stdout, "_The transcript changed after this summary was written._")
+        let plain = await runCLI(["show", IDs.advisor.rawValue], fixture)
+        try expectNotContains(plain.stdout, "## Summary")
+
+        let search = await runCLI(["search", "recognizer"], fixture)
+        try expectContains(search.stdout, "  summary: \(overview)\n")
+        try expectContains(search.stdout, "1 passage in 1 call.")
+        try expectEqual(try await runCLI(["search", "recognizer", "--json"], fixture).json().array("passages").first?["field"], "summary")
+        let calls = try await runCLI(["list", "--json"], fixture).json().array("calls")
+        try expectEqual(calls.first { $0["id"] == .string(id) }?["has_summary"], true)
+        try expectEqual(calls.first { $0["id"] == .string(IDs.advisor.rawValue) }?["has_summary"], false)
+        try expectContains(try String(contentsOf: fixture.root.appendingPathComponent("index.jsonl"), encoding: .utf8),
+                           "\"hasSummary\":true")
+
+        let info = await runCLI(["info"], fixture)
+        try expectContains(info.stdout, "OpenAI: title ideas off · summaries off · model gpt-6.1-terra")
+        let settings = try await runCLI(["info", "--json"], fixture).json()["settings"]
+        try expectEqual(settings?["ai_suggest_titles"], false)
+        try expectEqual(settings?["ai_summarize"], false)
+        try expectEqual(settings?["ai_model"], "gpt-6.1-terra")
+        try expectEqual(settings?["ai_language"], "english")
+    }
+
     suite.test("show: not found, ambiguous and bad formats") {
         let missing = try await run(["show", "01ZZZZZZ"])
         try expectEqual(missing.code, ExitCode.notFound)

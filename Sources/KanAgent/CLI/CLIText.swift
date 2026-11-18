@@ -92,7 +92,7 @@ enum CLIText {
                 out += "  [\(KanTime.hms(hit.time ?? 0))] \(hit.speakerName ?? "Unknown speaker"): \(hit.snippet)\n"
             case .bookmark:
                 out += "  bookmark [\(KanTime.hms(hit.time ?? 0))]: \(hit.snippet)\n"
-            case .title, .tags, .notes:
+            case .title, .tags, .notes, .summary:
                 out += "  \(hit.field.rawValue): \(hit.snippet)\n"
             }
         }
@@ -152,6 +152,8 @@ enum CLIText {
         let retention = s.audioRetentionDays.map { "\($0) days" } ?? "forever"
         lines.append(("", "keep audio: \(s.keepAudio ? "yes, \(retention)" : "no") · remember voices: \(s.rememberVoices ? "yes" : "no") · auto-detect calls: \(s.autoDetect ? "yes" : "no")"))
         lines.append(("", "models: general \(s.generalModelID), English \(s.englishModelID), Bangla \(s.banglaModelID)"))
+        lines.append(("", "OpenAI: title ideas \(s.aiSuggestTitles ? "on" : "off") · summaries \(s.aiSummarize ? "on" : "off")"
+                      + " · model \(s.effectiveAIModel)"))
         lines.append(("Agents", "`kan mcp-config` prints MCP setup; \(library.store.agentsGuideURL.lastPathComponent) in the library explains the files"))
         lines.append(("kan", "\(KanVersion.current) · \(executable)"))
         let width = lines.map(\.0.count).max() ?? 0
@@ -170,6 +172,10 @@ enum CLIText {
             "keep_audio": .bool(s.keepAudio),
             "remember_voices": .bool(s.rememberVoices),
             "auto_detect": .bool(s.autoDetect),
+            "ai_suggest_titles": .bool(s.aiSuggestTitles),
+            "ai_summarize": .bool(s.aiSummarize),
+            "ai_model": .string(s.effectiveAIModel),
+            "ai_language": .string(s.aiLanguage.rawValue),
         ]
         if let days = s.audioRetentionDays { o["audio_retention_days"] = .int(days) }
         return .object(o)

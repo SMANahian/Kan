@@ -38,6 +38,16 @@ enum Fixture {
                           bookmarks: bookmarks)
     }
 
+    /// A summary as OpenAI writes it (in English, by GPT-6.1 Terra on Tue 17 Nov 2026).
+    static func summary(overview: String, keyPoints: [String] = [], ideas: [String] = [], decisions: [String] = [],
+                        actionItems: [String] = [], openQuestions: [String] = [], model: String = "gpt-6.1-terra",
+                        generatedAt: Date = date("2026-11-17T09:30:00-05:00"), fingerprint: String = "",
+                        shortened: Bool = false) -> AISummary {
+        AISummary(overview: overview, keyPoints: keyPoints, ideas: ideas, decisions: decisions, actionItems: actionItems,
+                  openQuestions: openQuestions, language: .english, model: model, generatedAt: generatedAt,
+                  fingerprint: fingerprint, shortened: shortened)
+    }
+
     /// A unit vector along `axis` (256-d like WeSpeaker), optionally tilted toward `toward`.
     static func vector(_ axis: Int, cosine: Float = 1, toward other: Int = 255, dimensions: Int = 256) -> [Float] {
         var v = [Float](repeating: 0, count: dimensions)

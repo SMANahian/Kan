@@ -539,6 +539,103 @@ func mcpToolTests() -> TestSuite {
         try expectContains(try h.toolError("export_call", ["call_id": "01KAX3C0", "format": "docx"]), "format must be one of")
     }
 
+    suite.test("OpenAI summaries and title ideas: get_call, get_transcript, list_calls, search, export") {
+        let fixture = try AgentFixture.withInsights("mcp-ai")
+        let before = snapshot(fixture.root)
+        let h = MCPHarness(fixture.library())
+        let initialized = try h.initialize()
+        try expectContains(try expectNotNil(initialized["result"]?["instructions"]?.stringValue), "Summaries are written by OpenAI")
+        let id = JSONValue.string(IDs.summarized.rawValue)
+        let overview = "Nahian and Rahim chose a tokenizer for the Bangla speech recognizer."
+
+        let call = try h.structured("get_call", ["call_id": id])
+        let summary = try expectNotNil(call["ai_summary"], "get_call has the summary")
+        try expectEqual(summary["overview"], .string(overview))
+        try expectEqual(summary["key_points"], ["Start from the Bengali.AI tokenizer [00:00:07]"])
+        try expectEqual(summary["ideas"], [])
+        try expectEqual(summary["decisions"], ["Benchmark before training"])
+        try expectEqual(summary["action_items"], ["Nahian: run the benchmark by Friday [00:00:13]"])
+        try expectEqual(summary["open_questions"], [])
+        try expectEqual(summary["language"], "english")
+        try expectEqual(summary["model"], "gpt-6.1-terra")
+        try expectEqual(summary["generated_at"], "2026-11-16T11:30:00-05:00")
+        try expectEqual(summary["shortened"], false)
+        try expectEqual(summary["transcript_changed"], false)
+        let ideas = try expectNotNil(call["title_ideas"])
+        try expectEqual(ideas["titles"], ["Bangla tokenizer benchmark plan", "Choosing a tokenizer for Bangla ASR", "Bengali.AI tokenizer trial"])
+        try expectEqual(ideas["model"], "gpt-6.1-terra")
+        try expectEqual(ideas["transcript_changed"], false)
+        let text = try h.call("get_call", ["call_id": id]).text
+        try expectContains(text, "- title ideas (by OpenAI): “Bangla tokenizer benchmark plan” · “Choosing a tokenizer for Bangla ASR” · “Bengali.AI tokenizer trial”\n")
+        try expectContains(text, "\n## Summary\n\(overview)\n\n### Key points\n- Start from the Bengali.AI tokenizer [00:00:07]\n\n"
+                           + "### Decisions\n- Benchmark before training\n\n### Action items\n- Nahian: run the benchmark by Friday [00:00:13]\n\n"
+                           + "_Summary written by OpenAI (gpt-6.1-terra) on 16 Nov 2026; it can contain mistakes._\n\n## Speakers\n")
+        try expectNotContains(text, "The transcript changed")
+
+        // Written before a speaker was named: it says so.
+        let old = try h.structured("get_call", ["call_id": .string(IDs.outdated.rawValue)])
+        try expectEqual(old["ai_summary"]?["transcript_changed"], true)
+        try expectEqual(old["ai_summary"]?["shortened"], true)
+        try expect(old["title_ideas"] == nil)
+        try expectContains(try h.call("get_call", ["call_id": .string(IDs.outdated.rawValue)]).text,
+                           "_The call was too long to send whole, so the middle of the transcript was left out._\n"
+                           + "_The transcript changed after this summary was written._\n")
+        // A call without OpenAI output has neither.
+        let plain = try h.structured("get_call", ["call_id": .string(IDs.advisor.rawValue)])
+        try expect(plain["ai_summary"] == nil && plain["title_ideas"] == nil)
+        try expectNotContains(try h.call("get_call", ["call_id": .string(IDs.advisor.rawValue)]).text, "## Summary")
+
+        // get_transcript: reading the whole call in Markdown starts with the summary; parts and other formats don't.
+        let first = try h.call("get_transcript", ["call_id": id]).text
+        try expectContains(first, "segments 1–3 of 3 · 00:00:02–00:00:18\n\n## Summary\n\(overview)\n")
+        try expectContains(first, "it can contain mistakes._\n\n## Transcript\n**Nahian** [00:00:02]\nচলো tokenizer নিয়ে কথা বলি।\n")
+        for args in [["format": "text"], ["format": "json"], ["from_seconds": 5], ["offset": 1]] as [[String: JSONValue]] {
+            let result = try h.call("get_transcript", args.merging(["call_id": id]) { a, _ in a })
+            try expect(!result.isError, result.text)
+            try expectNotContains(result.text, "## Summary", "\(args)")
+            try expectNotContains(result.text, overview, "\(args)")
+        }
+        try expectEqual(try h.structured("get_transcript", ["call_id": id])["text"]?.stringValue?.contains("Summary"), false,
+                        "the structured text is the transcript")
+        try expectNotContains(try h.call("get_transcript", ["call_id": .string(IDs.advisor.rawValue)]).text, "## Transcript")
+
+        // list_calls flags calls with a summary; without notes, the summary is the preview.
+        let rows = try h.structured("list_calls").array("calls")
+        let row = try expectNotNil(rows.first { $0["id"] == id })
+        try expectEqual(row["has_summary"], true)
+        try expectEqual(row["preview"], .string(overview))
+        try expectEqual(rows.first { $0["id"] == .string(IDs.advisor.rawValue) }?["has_summary"], false)
+        try expectContains(try h.call("list_calls", ["query": "tokenizer"]).text, "· has an AI summary\n")
+        try expectEqual(try h.structured("list_calls", ["query": "recognizer"]).array("calls").compactMap { $0["id"]?.stringValue },
+                        [IDs.summarized.rawValue])
+
+        // search_transcripts finds what only the summary says (English words for a Bangla call).
+        let passage = try h.structured("search_transcripts", ["query": "recognizer"]).array("passages")[0]
+        try expectEqual(passage["field"], "summary")
+        try expectEqual(passage["call_id"], id)
+        try expectEqual(passage["snippet"], .string(overview))
+        try expect(passage["time_seconds"] == nil && passage["speaker"] == nil && passage["segment_id"] == nil)
+        try expectContains(try h.call("search_transcripts", ["query": "recognizer"]).text, "- summary: \(overview)\n")
+
+        // export_call: the .md has the section, the JSON the record's own `ai`.
+        try expectContains(try h.call("export_call", ["call_id": id]).text, "\n## Summary\n\(overview)\n")
+        let json = try JSONValue.parse(try h.call("export_call", ["call_id": id, "format": "json"]).text)
+        try expectEqual(json["ai"]?["appliedTitle"], "Bangla tokenizer benchmark plan")
+        try expectEqual(json["ai"]?["summary"]?["overview"], .string(overview))
+
+        // The tool descriptions say what is there.
+        let tools = try expectNotNil(try h.request("tools/list")["result"]?["tools"]?.arrayValue)
+        func description(_ name: String) throws -> String {
+            try expectNotNil(tools.first { $0["name"] == .string(name) }?["description"]?.stringValue, name)
+        }
+        for (tool, needle) in [("get_call", "ai_summary"), ("get_call", "title_ideas"), ("get_call", "can contain mistakes"),
+                               ("list_calls", "has_summary"), ("search_transcripts", "AI summaries"),
+                               ("get_transcript", "AI summary"), ("export_call", "AI summary")] {
+            try expectContains(try description(tool), needle, tool)
+        }
+        try expect(snapshot(fixture.root) == before, "still read-only")
+    }
+
     suite.test("new and removed calls appear without a restart") {
         let fixture = try AgentFixture("mcp-reload")
         let h = MCPHarness(fixture.library(), reloadInterval: 0)

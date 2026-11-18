@@ -10,12 +10,14 @@ import KanCore
 //
 // Implementation map: this file holds the shared types, state, lifecycle, notices and the label
 // panel queue; the flows live in AppModel+Recording.swift (detection and recording),
-// AppModel+Library.swift (library actions), AppModel+Setup.swift (settings, permissions, models)
-// and AppModel+Maintenance.swift (crash recovery, audio retention).
+// AppModel+Library.swift (library actions), AppModel+Setup.swift (settings, permissions, models),
+// AppModel+Maintenance.swift (crash recovery, audio retention) and AppModel+AI.swift (the OpenAI
+// key, title ideas and summaries).
 
 /// The services the UI talks to. Live implementations come from KanAudio / KanDetect /
-/// KanTranscribe (wired in Services/LiveServices.swift at integration); MockServices drive the UI
-/// without real audio (set KAN_MOCK=1, or used automatically if live services can't be created).
+/// KanTranscribe / KanAI (wired in Services/LiveServices.swift at integration); MockServices drive
+/// the UI without real audio or network (set KAN_MOCK=1, or used automatically if live services
+/// can't be created).
 struct KanServices {
     var detector: CallDetecting
     var recorder: CallRecording
@@ -23,6 +25,10 @@ struct KanServices {
     var models: ModelManaging
     var permissions: PermissionsProviding
     var archiver: AudioArchiving?
+    /// Title ideas and summaries from OpenAI (opt-in).
+    var assistant: CallAssisting
+    /// Where the OpenAI API key is kept: the login keychain, memory in the self-test.
+    var apiKeys: APIKeyStoring
     var isMock: Bool
 }
 
@@ -202,6 +208,15 @@ final class AppModel {
     /// say so and offer a folder on this Mac (`useLocalLibrary`).
     var libraryInICloud = false
 
+    // MARK: OpenAI (AppModel+AI.swift)
+    /// Whether an OpenAI API key is saved — never the key itself.
+    var apiKeyState: APIKeyState = .loading
+    /// Settings › OpenAI › Test: the last result (nil until it runs; reset when the key changes).
+    var apiKeyCheck: APIKeyCheck?
+    /// Title-idea and summary jobs that are waiting, running or failed, by call and kind. Not
+    /// persisted: a relaunch forgets them.
+    var aiJobs: [AIJobKey: AIJobState] = [:]
+
     // MARK: Internals (not observed)
     @ObservationIgnored let environment: AppEnvironment
     @ObservationIgnored weak var ui: AppUIBridge?
@@ -235,6 +250,13 @@ final class AppModel {
     @ObservationIgnored var activityTokens: [String: NSObjectProtocol] = [:]
     @ObservationIgnored var libraryRecheckRunning = false
     @ObservationIgnored var libraryRecheckAgain = false
+    /// The saved OpenAI API key, read off the main thread at startup. Never observed or shown.
+    @ObservationIgnored var apiKey: String?
+    @ObservationIgnored var apiKeyLoadTask: Task<Void, Never>?
+    /// The OpenAI requests in flight, by call and kind.
+    @ObservationIgnored var aiRequests: [AIJobKey: AIRequest] = [:]
+    /// Calls whose transcript became ready while the key was still being read (handled once it is).
+    @ObservationIgnored var aiReadyBeforeKey: [CallID] = []
 
     convenience init(services: KanServices, settingsStore: SettingsStore = SettingsStore(),
                      voiceprints: VoiceprintStore = VoiceprintStore()) {
@@ -269,14 +291,17 @@ final class AppModel {
         }
     }
 
-    /// `start()`, awaiting the end of startup (used by the self-test).
+    /// `start()`, awaiting the end of startup and of reading the OpenAI key (used by the self-test).
     func startAndWait() async {
         start()
         await startupTask?.value
+        await apiKeyLoadTask?.value
     }
 
     private func startUp() async {
         KanLog.info("Kan \(KanVersion.current) starting with \(services.isMock ? "mock" : "live") services; library \(library.root.path)")
+        // Alongside the rest of startup: reading the Keychain can wait for the user to allow it.
+        loadAPIKeyInBackground()
         KanPaths.ensureDirectories()
         do {
             try FileManager.default.createDirectory(at: environment.callsDirectory, withIntermediateDirectories: true)
@@ -363,6 +388,9 @@ final class AppModel {
         }
         // Unanswered "keep this recording?" questions: keep the audio (never lose a recording on quit).
         for id in Array(unconfirmed.keys) { keepUnconfirmed(id) }
+        // OpenAI jobs aren't resumed at the next launch (the library's buttons cover them).
+        cancelAllAIJobs(reason: "Kan is quitting")
+        apiKeyLoadTask?.cancel()
         await waitForFinalizations()
         labelWaitTask?.cancel()
         labelWaitTask = nil
@@ -397,6 +425,7 @@ final class AppModel {
             recordRevisions[id] = nil
             pendingLabels.removeAll { $0 == id }
             if presentedLabel == id { presentedLabel = nil }
+            cancelAIJobs(for: id, reason: "the call was deleted")
         case .reloaded:
             break
         }
@@ -427,6 +456,8 @@ final class AppModel {
         switch status.state {
         case .done:
             processing[id] = nil
+            // A new transcript (the first, Retry, another language): title ideas, then the summary.
+            transcriptDidBecomeReady(id)
         case .failed, .cancelled:
             // Deleting a call (or its audio) cancels its job, and the news arrives after the
             // delete, as do the job's own last words: then there's nothing to show or retry. Jobs
@@ -764,10 +795,12 @@ final class AppModel {
         }
     }
 
-    /// The label panel for `id` closed (saved, later or discarded).
+    /// The label panel for `id` closed (saved, later or discarded). A summary that waited for it
+    /// starts now, with the speaker names given there.
     func closeLabel(_ id: CallID) {
         pendingLabels.removeAll { $0 == id }
         if presentedLabel == id { presentedLabel = nil }
         updateLabelPresentation()
+        startWaitingSummaries()
     }
 }

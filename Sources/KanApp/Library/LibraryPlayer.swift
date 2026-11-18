@@ -13,6 +13,7 @@ enum LibraryDefaults {
     static let playbackRate = "library.playbackRate"
     static let collapsedFolders = "library.collapsedFolders"
     static let sidebarSelection = "library.sidebarSelection"
+    static let summaryCollapsed = "library.summaryCollapsed"
 }
 
 /// Plays a call's two tracks — "me" (the microphone) and "them" (the call app) — together.

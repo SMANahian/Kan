@@ -19,6 +19,8 @@ struct SettingsView: View {
                 .tabItem { Label("Storage", systemImage: "internaldrive") }
             AgentsSettingsView()
                 .tabItem { Label("AI Agents", systemImage: "terminal") }
+            OpenAISettingsView()
+                .tabItem { Label("OpenAI", systemImage: "sparkles") }
             PermissionsSettingsView()
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
             AboutSettingsView()
@@ -59,7 +61,7 @@ struct LibraryCloudNotice: View {
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Button("Relaunch Kan") { model.perform(.relaunch) }
                 } else {
-                    Text("iCloud syncs \(folder), so macOS would upload every transcript to iCloud. Kan itself uploads nothing.")
+                    Text("iCloud syncs \(folder), so macOS would upload every transcript to iCloud. Kan itself uploads nothing, unless you use its optional OpenAI features.")
                         .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     Button("Keep Transcripts on This Mac (\(local))") { model.useLocalLibrary() }
                 }
@@ -365,7 +367,7 @@ struct TranscriptionSettingsView: View {
                 modelPicker("General model", role: .general, selection: $model.settings.generalModelID)
                 modelPicker("English model", role: .english, selection: $model.settings.englishModelID)
                 modelPicker("Bangla model", role: .bangla, selection: $model.settings.banglaModelID)
-                SettingsFootnote("Models are downloaded once into ~/Library/Application Support/Kan/Models. Everything else stays on this Mac.")
+                SettingsFootnote("Models are downloaded once into ~/Library/Application Support/Kan/Models. Transcription runs on this Mac; the audio never leaves it.")
             }
             Section("Vocabulary") {
                 TextEditor(text: $model.settings.vocabulary)
@@ -528,7 +530,7 @@ struct AboutSettingsView: View {
             if model.services.isMock {
                 Text("Running with mock services (no real audio)").font(.caption).foregroundStyle(.orange)
             }
-            Text("Kan records and transcribes your calls entirely on this Mac. It never uploads audio, transcripts or remembered voices; its only network use is downloading transcription models when you ask.")
+            Text("Kan records and transcribes your calls entirely on this Mac. It never uploads audio or remembered voices. Its only network use is downloading transcription models when you ask and, if you use the optional OpenAI features (Settings › OpenAI), sending transcripts to OpenAI for title ideas and summaries.")
                 .multilineTextAlignment(.center)
                 .font(.callout)
                 .foregroundStyle(.secondary)

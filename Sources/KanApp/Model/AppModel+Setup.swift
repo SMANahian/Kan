@@ -15,6 +15,7 @@ extension AppModel {
         settingsSnapshot.set(current)
         appliedSettings = current
         if previous.rememberVoices && !current.rememberVoices { deleteAllVoiceSamples() }
+        if previous.aiSummarize && !current.aiSummarize { dropWaitingSummaries() }
         guard isStarted else { return }
 
         if DetectionConfig(settings: previous) != DetectionConfig(settings: current) {

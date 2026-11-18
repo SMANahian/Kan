@@ -1,18 +1,21 @@
 import AVFoundation
 import Foundation
+import KanAI
 import KanCore
 
 // Mock implementations of every KanCore service protocol. They drive the whole app without
-// touching audio hardware or privacy permissions: KAN_MOCK=1 forces them, and they're used when
-// the live services can't be created. The Debug submenu and the self-test script them.
+// touching audio hardware, privacy permissions, the network or the Keychain: KAN_MOCK=1 forces
+// them, and they're used when the live services can't be created. The Debug submenu and the
+// self-test script them.
 
 enum MockServices {
     /// - Parameters:
     ///   - clock: `.realTime()` for the app; a virtual clock makes the self-test instantaneous.
     ///   - transcriptionStepSeconds: pause between progress steps of the mock transcriber.
     ///   - modelDownloadSeconds: how long a mock model download takes.
+    ///   - aiSeconds: how long the mock OpenAI takes to answer.
     static func make(clock: MockClock = .realTime(), transcriptionStepSeconds: Double = 0.6,
-                     modelDownloadSeconds: Double = 3) -> KanServices {
+                     modelDownloadSeconds: Double = 3, aiSeconds: Double = 1.5) -> KanServices {
         let audio = MockAudioLibrary.shared
         let models = MockModelStore(downloadSeconds: modelDownloadSeconds)
         return KanServices(
@@ -22,6 +25,8 @@ enum MockServices {
             models: models,
             permissions: MockPermissions(),
             archiver: MockArchiver(),
+            assistant: MockAssistant(clock: clock, answerSeconds: aiSeconds),
+            apiKeys: InMemoryAPIKeyStore(),
             isMock: true)
     }
 }
@@ -638,6 +643,7 @@ final class MockTranscriber: Transcribing, @unchecked Sendable {
     private let models: MockModelStore?
     private let lock = NSLock()
     private var failure: Error?
+    private var held = false
 
     init(audio: MockAudioLibrary, stepSeconds: Double, models: MockModelStore? = nil) {
         self.audio = audio
@@ -647,6 +653,12 @@ final class MockTranscriber: Transcribing, @unchecked Sendable {
 
     /// Makes the next transcription throw (tests, Debug).
     func failNext(with error: Error) { lock.withLock { failure = error } }
+
+    /// Tests: transcriptions wait before their last step until `release()`, as a long call's would
+    /// (so the label panel can be saved before the transcript is ready).
+    func hold() { lock.withLock { held = true } }
+
+    func release() { lock.withLock { held = false } }
 
     func transcribe(_ request: TranscriptionRequest,
                     progress: @escaping @Sendable (PipelineProgress) -> Void) async throws -> TranscriptionOutput {
@@ -661,6 +673,9 @@ final class MockTranscriber: Transcribing, @unchecked Sendable {
         for (i, stage) in stages.enumerated() {
             progress(PipelineProgress(stage: stage, fraction: Double(i) / Double(stages.count)))
             try await Task.sleep(nanoseconds: UInt64(stepSeconds * 1_000_000_000))
+        }
+        while lock.withLock({ held }) {
+            try await Task.sleep(nanoseconds: 2_000_000)
         }
         if let error = lock.withLock({ () -> Error? in defer { failure = nil }; return failure }) { throw error }
         progress(PipelineProgress(stage: .finishing, fraction: 1))
@@ -709,6 +724,191 @@ final class MockTranscriber: Transcribing, @unchecked Sendable {
         }
         let norm = vector.reduce(0) { $0 + $1 * $1 }.squareRoot()
         return norm > 0 ? vector.map { $0 / norm } : vector
+    }
+}
+
+// MARK: - OpenAI
+
+/// A scriptable `CallAssisting`: canned title ideas and a summary of the canned conversation
+/// (naming the speakers as the call it's given has them), an answer delay, scripted failures, held
+/// requests and a record of every request. It checks the key and the transcript the way
+/// `OpenAIAssistant` does and honours cancellation. Nothing reaches the network. Thread-safe.
+final class MockAssistant: CallAssisting, @unchecked Sendable {
+    enum Kind: String, Sendable {
+        case titles, summary, models
+    }
+
+    /// A request as the mock received it.
+    struct Request: Sendable {
+        var kind: Kind
+        var callID: CallID?
+        var apiKey: String
+        var model: String
+        var language: AIOutputLanguage
+        var userName: String
+        /// `CallInsights.fingerprint(of:)` of the call sent.
+        var fingerprint: String
+        /// The call's speaker names as sent (the summary must see those given in the label panel).
+        var speakerNames: [String]
+    }
+
+    static let defaultTitles = [
+        "Bangla speech recognition with little data",
+        "Fine-tuning a multilingual model for Bangla",
+        "Plan for a Bangla speech dataset",
+    ]
+
+    private static let banglaTitles = [
+        "অল্প ডেটায় বাংলা স্পিচ রিকগনিশন",
+        "বাংলার জন্য মাল্টিলিঙ্গুয়াল মডেল ফাইন-টিউনিং",
+        "বাংলা স্পিচ ডেটাসেটের পরিকল্পনা",
+    ]
+
+    /// What `availableModels` answers: the known models and a few that aren't for text.
+    static let defaultModels = ["gpt-6-astra", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-image-2",
+                                "gpt-realtime-2", "text-embedding-4-small"]
+
+    private let clock: MockClock
+    private let answerSeconds: Double
+    private let lock = NSLock()
+    private var titles = MockAssistant.defaultTitles
+    private var failures: [Kind: [AIError]] = [:]
+    private var standingFailure: AIError?
+    private var held: Set<Kind> = []
+    private var received: [Request] = []
+    private var unanswered: [Kind: Int] = [:]
+    private var cancelled: [Kind: Int] = [:]
+    private var answersWhenCancelled = false
+
+    init(clock: MockClock, answerSeconds: Double) {
+        self.clock = clock
+        self.answerSeconds = answerSeconds
+    }
+
+    // MARK: Scripting
+
+    /// The title ideas of the next answers (`defaultTitles` to begin with).
+    func setTitles(_ titles: [String]) { lock.withLock { self.titles = titles } }
+
+    /// The next request of `kind` fails with `error` (calling it again queues more failures).
+    func failNext(_ kind: Kind, with error: AIError) { lock.withLock { failures[kind, default: []].append(error) } }
+
+    /// Debug: every request fails with `error` until this is set to nil.
+    func setStandingFailure(_ error: AIError?) { lock.withLock { standingFailure = error } }
+
+    /// Requests of `kind` wait once received, until `release(kind)` (a slow answer).
+    func hold(_ kind: Kind) { _ = lock.withLock { held.insert(kind) } }
+
+    func release(_ kind: Kind) { _ = lock.withLock { held.remove(kind) } }
+
+    /// Tests: answers even after the request was cancelled, as a response already on its way does
+    /// (Kan must drop it itself).
+    func answerWhenCancelled(_ answers: Bool) { lock.withLock { answersWhenCancelled = answers } }
+
+    /// Every request received, oldest first.
+    var requests: [Request] { lock.withLock { received } }
+
+    func requests(_ kind: Kind, for id: CallID? = nil) -> [Request] {
+        requests.filter { $0.kind == kind && (id == nil || $0.callID == id) }
+    }
+
+    /// Requests of `kind` received and not answered (or failed) yet.
+    func inFlight(_ kind: Kind) -> Int { lock.withLock { unanswered[kind] ?? 0 } }
+
+    /// Requests of `kind` whose task was cancelled while the mock worked on them.
+    func cancellations(_ kind: Kind) -> Int { lock.withLock { cancelled[kind] ?? 0 } }
+
+    // MARK: CallAssisting
+
+    func suggestTitles(for record: CallRecord, options: AIOptions) async throws -> AITitleSuggestions {
+        try Self.check(options.apiKey, record: record)
+        try await answer(.titles, request: Self.request(.titles, record: record, options: options))
+        let scripted = lock.withLock { self.titles }
+        let ideas = options.language == .bangla && scripted == Self.defaultTitles ? Self.banglaTitles : scripted
+        return AITitleSuggestions(titles: ideas, model: options.model, generatedAt: clock.now(),
+                                  fingerprint: CallInsights.fingerprint(of: record))
+    }
+
+    func summarize(_ record: CallRecord, options: AIOptions) async throws -> AISummary {
+        try Self.check(options.apiKey, record: record)
+        try await answer(.summary, request: Self.request(.summary, record: record, options: options))
+        return Self.summary(of: record, options: options, at: clock.now())
+    }
+
+    func availableModels(apiKey: String) async throws -> [String] {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIError.missingKey }
+        try await answer(.models, request: Request(kind: .models, callID: nil, apiKey: apiKey, model: "",
+                                                   language: .english, userName: "", fingerprint: "", speakerNames: []))
+        return Self.defaultModels.sorted()
+    }
+
+    // MARK: Internals
+
+    private static func check(_ key: String, record: CallRecord) throws {
+        guard !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AIError.missingKey }
+        guard OpenAIPrompts.hasTranscript(record) else { throw AIError.emptyTranscript }
+    }
+
+    private static func request(_ kind: Kind, record: CallRecord, options: AIOptions) -> Request {
+        Request(kind: kind, callID: record.id, apiKey: options.apiKey, model: options.model, language: options.language,
+                userName: options.userName, fingerprint: CallInsights.fingerprint(of: record),
+                speakerNames: record.speakers.map(\.name))
+    }
+
+    /// Records the request, takes as long as an answer would (held, then the delay), then throws a
+    /// scripted failure, if any.
+    private func answer(_ kind: Kind, request: Request) async throws {
+        lock.withLock {
+            received.append(request)
+            unanswered[kind, default: 0] += 1
+        }
+        defer { lock.withLock { unanswered[kind] = max(0, (unanswered[kind] ?? 1) - 1) } }
+        let ignoresCancellation = lock.withLock { answersWhenCancelled }
+        do {
+            while lock.withLock({ held.contains(kind) }) {
+                if ignoresCancellation {
+                    try? await Task.sleep(nanoseconds: 2_000_000)
+                } else {
+                    try await Task.sleep(nanoseconds: 2_000_000)
+                }
+            }
+            if answerSeconds > 0 { try await Task.sleep(nanoseconds: UInt64(answerSeconds * 1_000_000_000)) }
+            if !ignoresCancellation { try Task.checkCancellation() }
+        } catch {
+            lock.withLock { cancelled[kind, default: 0] += 1 }
+            throw error
+        }
+        if Task.isCancelled { lock.withLock { cancelled[kind, default: 0] += 1 } }
+        let failure: AIError? = lock.withLock {
+            if var queued = failures[kind], !queued.isEmpty {
+                let first = queued.removeFirst()
+                failures[kind] = queued
+                return first
+            }
+            return standingFailure
+        }
+        if let failure { throw failure }
+    }
+
+    /// A summary of the canned conversation that names the speakers as `record` has them.
+    static func summary(of record: CallRecord, options: AIOptions, at date: Date) -> AISummary {
+        let me = options.userName.isEmpty ? (record.me?.name ?? "Me") : options.userName
+        func name(_ id: String) -> String { record.speaker(id)?.name ?? "the other side" }
+        let overview = options.language == .bangla
+            ? "অল্প কয়েক ঘণ্টার ডেটা দিয়ে বাংলা ভাষার জন্য একটি স্পিচ রিকগনিশন মডেল তৈরির পরিকল্পনা নিয়ে আলোচনা হয়েছে। প্রথম কাজ ডেটাসেট সংগ্রহ করা।"
+            : "\(me), \(name("s1")) and \(name("s2")) discussed a speech recognition model for Bangla trained on only a few hours of data. "
+                + "Fine-tuning a multilingual model, data augmentation and pseudo-labeling came up; the first step is collecting a dataset."
+        return AISummary(
+            overview: overview,
+            keyPoints: ["The key question is whether a multilingual model can be fine-tuned with a few hours of Bangla data [00:00:09]",
+                        "The project starts with collecting a dataset, then training the model [00:00:32]"],
+            ideas: ["Data augmentation and pseudo-labeling from unlabeled recordings, proposed by \(me) [00:00:26]",
+                    "A Bangla speech recognition model built for this project (\(name("s2"))) [00:00:16]"],
+            decisions: ["Write down the plan and meet again next week [00:00:38]"],
+            actionItems: ["\(me): write down the plan", "\(name("s2")): start collecting the dataset"],
+            openQuestions: ["How many hours of Bangla data are enough for fine-tuning?"],
+            language: options.language, model: options.model, generatedAt: date,
+            fingerprint: CallInsights.fingerprint(of: record))
     }
 }
 

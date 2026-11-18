@@ -65,7 +65,7 @@ public struct CommandSpec: Sendable, Equatable {
             examples: ["kan list --since 7d", "kan list --folder Research --tag thesis", "kan list --app zen --json"]),
         CommandSpec(
             "search", aliases: ["find"], synopsis: "search <words…> [filters] [--limit N] [--per-call N]",
-            summary: "Find passages in titles, tags, notes, bookmarks and transcripts",
+            summary: "Find passages in titles, tags, notes, bookmarks, summaries and transcripts",
             details: """
                 Every word must occur somewhere in the call (in any field); a quoted phrase must occur as \
                 typed. Matching ignores case but not Bangla vowel signs: search Bangla as you would write it \
@@ -84,7 +84,8 @@ public struct CommandSpec: Sendable, Equatable {
         CommandSpec(
             "show", aliases: ["cat"], synopsis: "show <call> [--format md|txt|json|srt|vtt]",
             summary: "Print a call's transcript (Markdown by default)",
-            details: callHelp + " --json is the same as --format json (the full call record).",
+            details: callHelp + " The Markdown is the call's .md: front matter, the AI summary if there is one, notes, "
+                + "bookmarks and transcript. --json is the same as --format json (the full call record).",
             options: [OptionSpec("format", short: "f", value: "FORMAT", help: "md (default), txt, json, srt or vtt")],
             positionals: .words("a call"),
             examples: ["kan show 01JD3Q8Z", "kan show \"Advisor meeting\" --format txt"]),

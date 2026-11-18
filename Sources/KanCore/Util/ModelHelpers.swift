@@ -35,6 +35,19 @@ extension CallRecord {
             .uniquedCaseInsensitive()
     }
 
+    /// True when the summary was written from another version of the transcript: an earlier
+    /// transcription, or before a speaker was renamed or a line edited (`CallInsights.fingerprint`).
+    public var isSummaryOutdated: Bool {
+        guard let summary = ai?.summary else { return false }
+        return summary.fingerprint != CallInsights.fingerprint(of: self)
+    }
+
+    /// True when the title ideas were written from another version of the transcript.
+    public var areTitleIdeasOutdated: Bool {
+        guard let ideas = ai?.titleSuggestions else { return false }
+        return ideas.fingerprint != CallInsights.fingerprint(of: self)
+    }
+
     /// Segments shown to readers: echo suspects (mic bleed of the remote side) removed when asked.
     func visibleSegments(hidingEchoSuspects: Bool) -> [TranscriptSegment] {
         let kept = hidingEchoSuspects ? segments.filter { !$0.flags.contains(.echoSuspect) } : segments
@@ -43,6 +56,14 @@ extension CallRecord {
             a.element.start != b.element.start ? a.element.start < b.element.start : a.offset < b.offset
         }.map(\.element)
     }
+}
+
+extension AISummary {
+    /// The overview and every list item, in the order the Markdown shows them.
+    var texts: [String] { [overview] + keyPoints + ideas + decisions + actionItems + openQuestions }
+
+    /// There is something to show: an overview or a list item that isn't blank.
+    public var hasText: Bool { texts.contains { !$0.singleLine.isEmpty } }
 }
 
 extension CallSummary {
@@ -58,15 +79,20 @@ extension CallSummary {
                   speakerNames: record.speakers.map(\.name), languages: record.languages,
                   segmentCount: record.segments.count, wordCount: words,
                   hasAudio: record.audio?.isAvailable ?? false,
+                  hasSummary: record.ai?.summary?.hasText ?? false,
                   preview: CallSummary.preview(for: record, visible: visible),
                   markdownPath: markdownPath, jsonPath: jsonPath)
     }
 
     static let previewLength = 160
 
+    /// The user's notes, else the summary's overview, else the transcript.
     static func preview(for record: CallRecord, visible: [TranscriptSegment]) -> String {
         let notes = record.notes.singleLine
         if !notes.isEmpty { return notes.truncated(maxCharacters: previewLength) }
+        if let overview = record.ai?.summary?.overview.nfc.singleLine, !overview.isEmpty {
+            return overview.truncated(maxCharacters: previewLength)
+        }
         var text = ""
         for segment in visible {
             let line = segment.text.singleLine

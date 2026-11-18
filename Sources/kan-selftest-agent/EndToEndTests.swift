@@ -39,12 +39,28 @@ enum KanBinary {
         print("    (building kan for the end-to-end tests…)")
         let log = temporaryDirectory("agent-build").appendingPathComponent("build.log")
         let result = try runProcess(URL(fileURLWithPath: "/usr/bin/env"),
-                                    ["swift", "build", "--package-path", package.path, "--scratch-path", scratch.path,
-                                     "-c", configuration, "--product", "kan"],
+                                    ["swift", "build", "--package-path", package.path,
+                                     "--scratch-path", spelledAsInvoked(scratch).path, "-c", configuration, "--product", "kan"],
                                     environment: ProcessInfo.processInfo.environment, timeout: 600, outputFile: log)
         if result.code != 0 {
             print("    swift build --product kan failed:\n" + result.stdout.suffix(2000))
         }
+    }
+
+    /// `scratch` written the way this test was started, e.g. /tmp/kan-build rather than the
+    /// /private/tmp/kan-build its resolved path gives. Clang's module cache remembers the paths it
+    /// was built through: one cache reached under two spellings ("module … is defined in both")
+    /// breaks every later build there.
+    private static func spelledAsInvoked(_ scratch: URL) -> URL {
+        guard let argument = CommandLine.arguments.first, !argument.isEmpty else { return scratch }
+        let current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let target = realPath(scratch)
+        var candidate = URL(fileURLWithPath: argument, relativeTo: current).absoluteURL.standardizedFileURL.deletingLastPathComponent()
+        while candidate.path != "/" {
+            if realPath(candidate) == target { return candidate }
+            candidate = candidate.deletingLastPathComponent()
+        }
+        return scratch
     }
 }
 

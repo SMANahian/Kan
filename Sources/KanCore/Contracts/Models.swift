@@ -331,6 +331,8 @@ public struct CallRecord: Codable, Sendable, Identifiable {
     public var bookmarks: [Bookmark]
     public var audio: AudioAssets?
     public var processing: ProcessingInfo?
+    /// Title ideas and a summary from OpenAI (opt-in; nil until a feature ran for this call).
+    public var ai: CallInsights?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -340,7 +342,8 @@ public struct CallRecord: Codable, Sendable, Identifiable {
                 status: CallStatus = .queued, languageMode: LanguageMode = .auto, languages: [String] = [],
                 calendarEventTitle: String? = nil, attendees: [String] = [], speakers: [Speaker] = [],
                 segments: [TranscriptSegment] = [], bookmarks: [Bookmark] = [], audio: AudioAssets? = nil,
-                processing: ProcessingInfo? = nil, createdAt: Date = Date(), updatedAt: Date = Date()) {
+                processing: ProcessingInfo? = nil, ai: CallInsights? = nil, createdAt: Date = Date(),
+                updatedAt: Date = Date()) {
         self.id = id
         self.title = title
         self.folder = folder
@@ -362,6 +365,7 @@ public struct CallRecord: Codable, Sendable, Identifiable {
         self.bookmarks = bookmarks
         self.audio = audio
         self.processing = processing
+        self.ai = ai
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -392,7 +396,9 @@ public struct CallSummary: Codable, Sendable, Identifiable, Hashable {
     public var segmentCount: Int
     public var wordCount: Int
     public var hasAudio: Bool
-    /// First words of the notes or transcript.
+    /// The call has a summary from OpenAI (`CallRecord.ai.summary`, with some text).
+    public var hasSummary: Bool
+    /// First words of the notes, the summary or the transcript.
     public var preview: String
     /// Paths relative to the library root.
     public var markdownPath: String
@@ -403,7 +409,8 @@ public struct CallSummary: Codable, Sendable, Identifiable, Hashable {
     public init(id: CallID, title: String, folder: String, tags: [String], starred: Bool, labeled: Bool,
                 startedAt: Date, endedAt: Date, timeZone: String, appName: String, platform: CallPlatform,
                 status: CallStatus, speakerNames: [String], languages: [String], segmentCount: Int,
-                wordCount: Int, hasAudio: Bool, preview: String, markdownPath: String, jsonPath: String) {
+                wordCount: Int, hasAudio: Bool, hasSummary: Bool = false, preview: String, markdownPath: String,
+                jsonPath: String) {
         self.id = id
         self.title = title
         self.folder = folder
@@ -421,8 +428,41 @@ public struct CallSummary: Codable, Sendable, Identifiable, Hashable {
         self.segmentCount = segmentCount
         self.wordCount = wordCount
         self.hasAudio = hasAudio
+        self.hasSummary = hasSummary
         self.preview = preview
         self.markdownPath = markdownPath
         self.jsonPath = jsonPath
+    }
+
+    /// `hasSummary` is false when missing: index.jsonl lines written before Kan had summaries
+    /// still decode.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(CallID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        folder = try c.decode(String.self, forKey: .folder)
+        tags = try c.decode([String].self, forKey: .tags)
+        starred = try c.decode(Bool.self, forKey: .starred)
+        labeled = try c.decode(Bool.self, forKey: .labeled)
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        endedAt = try c.decode(Date.self, forKey: .endedAt)
+        timeZone = try c.decode(String.self, forKey: .timeZone)
+        appName = try c.decode(String.self, forKey: .appName)
+        platform = try c.decode(CallPlatform.self, forKey: .platform)
+        status = try c.decode(CallStatus.self, forKey: .status)
+        speakerNames = try c.decode([String].self, forKey: .speakerNames)
+        languages = try c.decode([String].self, forKey: .languages)
+        segmentCount = try c.decode(Int.self, forKey: .segmentCount)
+        wordCount = try c.decode(Int.self, forKey: .wordCount)
+        hasAudio = try c.decode(Bool.self, forKey: .hasAudio)
+        hasSummary = try c.decodeIfPresent(Bool.self, forKey: .hasSummary) ?? false
+        preview = try c.decode(String.self, forKey: .preview)
+        markdownPath = try c.decode(String.self, forKey: .markdownPath)
+        jsonPath = try c.decode(String.self, forKey: .jsonPath)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, folder, tags, starred, labeled, startedAt, endedAt, timeZone, appName, platform, status
+        case speakerNames, languages, segmentCount, wordCount, hasAudio, hasSummary, preview, markdownPath, jsonPath
     }
 }

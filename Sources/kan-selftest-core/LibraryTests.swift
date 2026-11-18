@@ -184,6 +184,60 @@ func libraryTests() -> TestSuite {
         try expectEqual(lib.files().filter { $0.hasPrefix("Inbox/") }.count, 5)
     }
 
+    suite.test("a call whose ai part this build can't read still loads; the next save drops it") {
+        let lib = TestLibrary("lib-ai-lenient")
+        let record = Fixture.record(title: "Odd insights", segments: [Fixture.segment(0, 1, 2, "me", "augmentation talk")])
+        let files = try lib.store.save(record)
+        var object = try expectNotNil(try JSONSerialization.jsonObject(with: Data(contentsOf: files.json)) as? [String: Any])
+        object["ai"] = ["summary": ["overview": 7], "titleSuggestions": "Idea", "appliedTitle": 3] as [String: Any]
+        try JSONSerialization.data(withJSONObject: object).write(to: files.json)
+        let store = lib.reopened()
+        try expectEqual(try store.reload().map(\.id), [record.id])
+        let loaded = try store.record(record.id)
+        try expectEqual(loaded.segments, record.segments)
+        try expect(loaded.ai?.isEmpty == true)
+        try expectEqual(store.summary(record.id)?.hasSummary, false)
+        try expectEqual(store.search(SearchQuery(text: "augmentation")).map(\.callID), [record.id])
+        try expect(!TranscriptRenderer.markdown(loaded).contains("## Summary"))
+        try store.update(record.id) { $0.notes = "edited" }
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: try expectNotNil(store.files(for: record.id)).json))
+        try expect((saved as? [String: Any])?["ai"] == nil, "nothing readable was left to keep")
+    }
+
+    suite.test("OpenAI's text is stored NFC; an applied title keeps matching the title; empty insights are dropped") {
+        let lib = TestLibrary("lib-ai-store")
+        let nfd = "কোথায় যাবে".decomposedStringWithCanonicalMapping
+        try expect(!nfd.unicodeScalars.elementsEqual(nfd.nfc.unicodeScalars), "test text must differ in NFD")
+        let applied = "  \(nfd)\n plan "
+        var record = Fixture.record(title: applied, segments: [Fixture.segment(0, 1, 2, "s1", nfd, language: "bn")])
+        let fingerprint = CallInsights.fingerprint(of: record)
+        record.ai = CallInsights(
+            titleSuggestions: AITitleSuggestions(titles: [applied, "  ", "Second idea"], model: "gpt-6.1-terra",
+                                                 generatedAt: Fixture.date("2026-11-17T09:30:00-05:00"), fingerprint: fingerprint),
+            summary: Fixture.summary(overview: "\n\(nfd)\n", keyPoints: ["", " point \(nfd) "], ideas: ["  "], fingerprint: fingerprint),
+            appliedTitle: applied)
+        let files = try lib.store.save(record)
+        let stored = try JSONDecoder.kan.decode(CallRecord.self, from: Data(contentsOf: files.json))
+        let ai = try expectNotNil(stored.ai)
+        try expectEqual(ai.titleSuggestions?.titles, [nfd.nfc + " plan", "Second idea"])
+        try expectEqual(stored.title, nfd.nfc + " plan")
+        try expectEqual(ai.appliedTitle, stored.title, "still the title Kan applied")
+        try expectEqual(ai.summary?.overview, nfd.nfc)
+        try expectEqual(ai.summary?.keyPoints, ["point " + nfd.nfc])
+        try expectEqual(ai.summary?.ideas, [])
+        try expect(ai.summary.map { $0.overview.unicodeScalars.elementsEqual(nfd.nfc.unicodeScalars) } ?? false)
+        try expect(!stored.isSummaryOutdated && !stored.areTitleIdeasOutdated)
+        try expect(lib.read(try expectNotNil(lib.store.summary(record.id)).markdownPath).contains("\n## Summary\n"))
+        // Removing every part removes the key.
+        try lib.store.update(record.id) { r in
+            r.ai?.summary = nil
+            r.ai?.titleSuggestions = nil
+            r.ai?.appliedTitle = nil
+        }
+        try expect(!lib.read(try expectNotNil(lib.store.summary(record.id)).jsonPath).contains("\"ai\""))
+        try expect(!lib.read(try expectNotNil(lib.store.summary(record.id)).markdownPath).contains("## Summary"))
+    }
+
     suite.test("the folder follows the files when they are moved outside Kan") {
         let lib = TestLibrary("lib-location")
         let record = Fixture.record(title: "Moved in Finder")
@@ -351,9 +405,12 @@ func libraryTests() -> TestSuite {
         let agents = lib.read("AGENTS.md")
         for phrase in ["kan-agents-guide-version: \(AgentsGuide.version)", "isMe", "kan mcp", "read-only", "Bangla",
                        "ISO-8601", "seconds from the start of the call", "kan search", "kan export", "kan show", "kan list",
-                       "Bengali script", "index.jsonl", "speakerID", "echoSuspect", "kan_id"] {
+                       "Bengali script", "index.jsonl", "speakerID", "echoSuspect", "kan_id",
+                       "## Summary", "`ai`", "titleSuggestions", "appliedTitle", "fingerprint", "shortened", "hasSummary",
+                       "can contain mistakes", "never audio", "The transcript changed after this summary was written."] {
             try expect(agents.contains(phrase), "AGENTS.md lacks \(phrase)")
         }
+        try expect(!agents.contains("Nothing here was sent to a cloud service"), "no longer true with the OpenAI features on")
         // Explicit rewrite produces identical files.
         let before = (lib.read("index.md"), lib.read("index.jsonl"))
         try lib.store.writeIndexes()
@@ -368,6 +425,11 @@ func libraryTests() -> TestSuite {
         try Data("<!-- kan-agents-guide-version: 0 -->\nold".utf8).write(to: url)
         try lib.store.save(Fixture.record(title: "One"))
         try expect(lib.read("AGENTS.md").contains("kan-agents-guide-version: \(AgentsGuide.version) -->"))
+        // The guide of the version before summaries is refreshed too.
+        try expect(AgentsGuide.version > 1)
+        try Data("<!-- kan-agents-guide-version: 1 -->\nthe guide without summaries".utf8).write(to: url)
+        try lib.store.save(Fixture.record(title: "One and a half"))
+        try expect(lib.read("AGENTS.md").contains("## AI summaries and title ideas (optional)"))
         try Data("<!-- kan-agents-guide-version: 999 -->\nfuture".utf8).write(to: url)
         try lib.store.save(Fixture.record(title: "Two"))
         try expect(lib.read("AGENTS.md").hasSuffix("future"))

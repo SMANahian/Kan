@@ -63,13 +63,15 @@ enum LibrarySearch {
     // MARK: Scoring
 
     /// Field weights are 100 apart and the term bonus is at most 60, so the field decides first
-    /// (title > tags > notes > bookmark > transcript), then the share of terms matched.
+    /// (title > tags > notes > bookmark > summary > transcript), then the share of terms matched.
+    /// What the user wrote ranks above what OpenAI wrote, which ranks above a passing mention.
     static func baseScore(_ field: SearchField) -> Double {
         switch field {
-        case .title: return 500
-        case .tags: return 400
-        case .notes: return 300
-        case .bookmark: return 200
+        case .title: return 600
+        case .tags: return 500
+        case .notes: return 400
+        case .bookmark: return 300
+        case .summary: return 200
         case .transcript: return 100
         }
     }
@@ -80,7 +82,8 @@ enum LibrarySearch {
         case .tags: return 1
         case .notes: return 2
         case .bookmark: return 3
-        case .transcript: return 4
+        case .summary: return 4
+        case .transcript: return 5
         }
     }
 
@@ -98,7 +101,7 @@ enum LibrarySearch {
         let matched: Int
         /// UTF-8 offset of the first match within the field's text.
         let offset: Int
-        /// Index into `SearchDocument.segments` (transcript) or `.bookmarks` (bookmark).
+        /// Index into `SearchDocument.segments` (transcript), `.bookmarks` (bookmark) or `.summary`.
         let index: Int?
         let time: Double?
         let score: Double
@@ -139,8 +142,10 @@ enum LibrarySearch {
         let tags = scan(doc.tags)
         let notes = scan(doc.notes)
         let bookmarks = doc.bookmarks.map { scan($0.text) }
+        let summary = doc.summary.map(scan)
         var found = title.mask | tags.mask | notes.mask
         for b in bookmarks { found |= b.mask }
+        for s in summary { found |= s.mask }
 
         // Transcript: only the first match per segment and term is needed.
         let segments = doc.segments
@@ -168,22 +173,27 @@ enum LibrarySearch {
             return RawHit(field: field, mask: mask, matched: matched, offset: offset, index: index, time: time,
                           score: score(field, matched: matched, of: patterns.count))
         }
+        // One hit for a field made of several texts (hit ids are call + field + segment): the text
+        // matching the most terms, earliest first, carries the snippet; the terms cover them all.
+        func combined(_ matches: [(mask: UInt64, first: Int)]) -> (best: Int, mask: UInt64)? {
+            var best: Int?
+            var mask: UInt64 = 0
+            for (i, match) in matches.enumerated() where match.mask != 0 {
+                mask |= match.mask
+                if best.map({ match.mask.nonzeroBitCount > matches[$0].mask.nonzeroBitCount }) ?? true { best = i }
+            }
+            return best.map { ($0, mask) }
+        }
         var result: [RawHit] = []
         if title.mask != 0 { result.append(raw(.title, title.mask, title.first)) }
         if tags.mask != 0 { result.append(raw(.tags, tags.mask, tags.first)) }
         if notes.mask != 0 { result.append(raw(.notes, notes.mask, notes.first)) }
-        // One bookmark hit per call (hit ids are call + field + segment): the bookmark matching
-        // the most terms, earliest first, carries the snippet; the terms cover every bookmark.
-        var bestBookmark: Int?
-        var bookmarkMask: UInt64 = 0
-        for (i, match) in bookmarks.enumerated() where match.mask != 0 {
-            bookmarkMask |= match.mask
-            if bestBookmark.map({ match.mask.nonzeroBitCount > bookmarks[$0].mask.nonzeroBitCount }) ?? true {
-                bestBookmark = i
-            }
+        if let hit = combined(bookmarks) {
+            result.append(raw(.bookmark, hit.mask, bookmarks[hit.best].first, index: hit.best,
+                              time: doc.bookmarks[hit.best].time))
         }
-        if let best = bestBookmark {
-            result.append(raw(.bookmark, bookmarkMask, bookmarks[best].first, index: best, time: doc.bookmarks[best].time))
+        if let hit = combined(summary) {
+            result.append(raw(.summary, hit.mask, summary[hit.best].first, index: hit.best))
         }
         for (index, mask) in segmentMasks.enumerated() where mask != 0 {
             let segment = segments[index]
@@ -208,6 +218,7 @@ enum LibrarySearch {
         case .tags: text = doc.tags
         case .notes: text = doc.notes
         case .bookmark: text = raw.index.map { doc.bookmarks[$0].text } ?? ""
+        case .summary: text = raw.index.map { doc.summary[$0] } ?? ""
         case .transcript:
             if let index = raw.index {
                 let segment = doc.segments[index]
@@ -231,7 +242,8 @@ enum LibrarySearch {
         return withinCall(a.raw, b.raw)
     }
 
-    /// Order of hits inside one call: best first, then title, tags, notes, bookmarks, transcript by time.
+    /// Order of hits inside one call: best first, then title, tags, notes, bookmarks, summary,
+    /// transcript by time.
     static func withinCall(_ a: RawHit, _ b: RawHit) -> Bool {
         if a.score != b.score { return a.score > b.score }
         let fa = fieldOrder(a.field), fb = fieldOrder(b.field)

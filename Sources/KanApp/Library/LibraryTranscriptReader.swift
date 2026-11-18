@@ -78,7 +78,7 @@ struct LibraryTranscriptReader: View {
                                      message: "The transcript will appear after the call.")
         case .queued?, .processing?:
             LibraryReaderPlaceholder(systemImage: "waveform", title: "The transcript is being generated",
-                                     message: "Kan transcribes on this Mac; nothing leaves it.")
+                                     message: "Kan transcribes on this Mac; the audio never leaves it.")
         case .failed?:
             LibraryReaderPlaceholder(systemImage: "exclamationmark.bubble", title: "No transcript yet",
                                      message: "Transcription didn't finish. The audio was kept, so you can retry.")

@@ -28,6 +28,7 @@ public enum AgentJSON {
             "segment_count": .int(s.segmentCount),
             "word_count": .int(s.wordCount),
             "has_audio": .bool(s.hasAudio),
+            "has_summary": .bool(s.hasSummary),
             "markdown_path": .string(path(s.markdownPath, root: root)),
             "json_path": .string(path(s.jsonPath, root: root)),
         ]
@@ -35,7 +36,8 @@ public enum AgentJSON {
         return .object(o)
     }
 
-    /// Everything about a call except its transcript.
+    /// Everything about a call except its transcript. `ai_summary` and `title_ideas` are there
+    /// only when OpenAI wrote them.
     public static func call(_ record: CallRecord, files: CallFiles?) -> JSONValue {
         let zone = record.timeZone
         func iso(_ date: Date) -> JSONValue { .string(AgentFormat.isoDate(date, timeZone: zone)) }
@@ -112,9 +114,46 @@ public enum AgentJSON {
             if let seconds = processing.processingSeconds { p["processing_seconds"] = .double(AgentFormat.rounded(seconds)) }
             o["processing"] = .object(p)
         }
+        if let summary = record.ai?.summary, summary.hasText { o["ai_summary"] = aiSummary(summary, in: record) }
+        if let ideas = record.ai?.titleSuggestions, !ideas.titles.isEmpty { o["title_ideas"] = titleIdeas(ideas, in: record) }
         if let files {
             o["markdown_path"] = .string(files.markdown.path)
             o["json_path"] = .string(files.json.path)
+        }
+        return .object(o)
+    }
+
+    /// The summary OpenAI wrote of a call: its text, which model wrote it when, and whether the
+    /// transcript changed since (`transcript_changed`: re-transcribed, a speaker renamed or a line
+    /// edited after it was written).
+    public static func aiSummary(_ summary: AISummary, in record: CallRecord) -> JSONValue {
+        var o: [String: JSONValue] = [
+            "overview": .string(summary.overview),
+            "key_points": strings(summary.keyPoints),
+            "ideas": strings(summary.ideas),
+            "decisions": strings(summary.decisions),
+            "action_items": strings(summary.actionItems),
+            "open_questions": strings(summary.openQuestions),
+            "language": .string(summary.language.rawValue),
+            "shortened": .bool(summary.shortened),
+            "transcript_changed": .bool(record.isSummaryOutdated),
+        ]
+        if !summary.model.singleLineText.isEmpty { o["model"] = .string(summary.model.singleLineText) }
+        if summary.generatedAt > .distantPast {
+            o["generated_at"] = .string(AgentFormat.isoDate(summary.generatedAt, timeZone: record.timeZone))
+        }
+        return .object(o)
+    }
+
+    /// Title ideas OpenAI suggested for a call, best first.
+    public static func titleIdeas(_ ideas: AITitleSuggestions, in record: CallRecord) -> JSONValue {
+        var o: [String: JSONValue] = [
+            "titles": strings(ideas.titles),
+            "transcript_changed": .bool(record.areTitleIdeasOutdated),
+        ]
+        if !ideas.model.singleLineText.isEmpty { o["model"] = .string(ideas.model.singleLineText) }
+        if ideas.generatedAt > .distantPast {
+            o["generated_at"] = .string(AgentFormat.isoDate(ideas.generatedAt, timeZone: record.timeZone))
         }
         return .object(o)
     }

@@ -20,6 +20,7 @@ enum MCPText {
             let people = LibraryQueries.people(s)
             if !people.isEmpty { facts.append("people: " + people.joined(separator: ", ")) }
             if !s.languages.isEmpty { facts.append("languages: " + s.languages.joined(separator: ", ")) }
+            if s.hasSummary { facts.append("has an AI summary") }
             out += "   " + facts.joined(separator: " · ") + "\n"
             if !s.preview.isEmpty { out += "   preview: \(s.preview)\n" }
         }
@@ -47,7 +48,7 @@ enum MCPText {
                 out += "- [\(KanTime.hms(hit.time ?? 0))] \(hit.speakerName ?? "Unknown speaker"): \(hit.snippet)\n"
             case .bookmark:
                 out += "- bookmark [\(KanTime.hms(hit.time ?? 0))]: \(hit.snippet)\n"
-            case .title, .tags, .notes:
+            case .title, .tags, .notes, .summary:
                 out += "- \(hit.field.rawValue): \(hit.snippet)\n"
             }
         }
@@ -75,6 +76,12 @@ enum MCPText {
         if !record.attendees.isEmpty { out += "- attendees: \(record.attendees.joined(separator: ", "))\n" }
         if let note = LibraryQueries.statusNote(record) { out += "- note: \(note)\n" }
         if let files { out += "- transcript file: \(files.markdown.path)\n" }
+        if let ideas = record.ai?.titleSuggestions, !ideas.titles.isEmpty {
+            out += "- title ideas (by OpenAI" + (record.areTitleIdeasOutdated ? ", from an earlier transcript" : "") + "): "
+                + ideas.titles.map { "“\($0.singleLineText)”" }.joined(separator: " · ") + "\n"
+        }
+        // The same section as in the .md, so the summary reads the same everywhere.
+        if let summary = TranscriptRenderer.summaryMarkdown(record) { out += "\n" + summary }
 
         if !record.speakers.isEmpty {
             var counts: [String: Int] = [:]
@@ -131,6 +138,11 @@ enum MCPText {
         }
         if let note = LibraryQueries.statusNote(record) { header += markdown ? "_\(note)_\n" : "(\(note))\n" }
         var out = header + "\n"
+        // Reading a whole call in Markdown starts with its summary, like the .md.
+        if markdown, page.offset == 0, page.fromSeconds == nil, page.toSeconds == nil,
+           let summary = TranscriptRenderer.summaryMarkdown(record) {
+            out += summary + "\n## Transcript\n"
+        }
         if page.segments.isEmpty {
             if page.total > 0 {
                 out += "No segments at offset \(page.offset) (there are \(page.total)).\n"
@@ -185,7 +197,7 @@ enum MCPText {
         return out
     }
 
-    /// AGENTS.md beyond this size is cut (Kan's own guide is about 10 KB; a user may have replaced it).
+    /// AGENTS.md beyond this size is cut (Kan's own guide is about 13 KB; a user may have replaced it).
     static let maxGuideBytes = 256 * 1024
 
     /// The library's AGENTS.md, or Kan's built-in guide when the file is missing or unreadable.
@@ -212,14 +224,16 @@ enum MCPInstructions {
             ("Speaker 2" = not named yet).
 
             Workflow: search_transcripts (find passages) or list_calls (browse, filter by folder/tag/person/app/date) → \
-            get_call (metadata, notes, bookmarks, speakers) → get_transcript (paged; follow next_offset, or read \
-            around a passage with from_seconds/to_seconds). list_folders / list_tags / list_people show what filters \
-            exist; get_library_info explains the file layout.
+            get_call (metadata, notes, bookmarks, speakers, and an AI summary when Kan's OpenAI features wrote one) → \
+            get_transcript (paged; follow next_offset, or read around a passage with from_seconds/to_seconds). \
+            list_folders / list_tags / list_people show what filters exist; get_library_info explains the file layout.
 
             Rules: use only call ids returned by these tools — never guess them. started_at / at are absolute ISO-8601 \
             times with the call's UTC offset (time_zone names the zone); time_seconds and [hh:mm:ss] count from the \
             call's start. Cite the call title, date and [hh:mm:ss] when quoting. Transcripts are machine-generated \
-            and may mishear names and jargon. This server is read-only; it cannot change calls.
+            and may mishear names and jargon. Summaries are written by OpenAI from the transcript and can contain \
+            mistakes: check them against the transcript and quote the transcript, not the summary. This server is \
+            read-only; it cannot change calls.
             """
     }
 }

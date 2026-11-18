@@ -47,7 +47,11 @@ extension AppModel {
                 mutate(&record)
                 if markLabeled { record.labeled = true }
             }
-            if markLabeled, presentedLabel != id { pendingLabels.removeAll { $0 == id } }
+            if markLabeled, presentedLabel != id, pendingLabels.contains(id) {
+                // Labeled elsewhere: its panel won't show, so a summary waiting for it can start.
+                pendingLabels.removeAll { $0 == id }
+                startWaitingSummaries()
+            }
             return saved
         } catch {
             report("Couldn't update the call", error: error, category: "library", log: "Couldn't update \(id)")
@@ -96,7 +100,9 @@ extension AppModel {
         let cleanTags = edits.tags.map { Array(Self.cleanTags($0).prefix(Self.maxTags)) }
         let newLanguage = edits.languageMode.flatMap { $0 != current.languageMode ? $0 : nil }
         let saved = applyUpdate(id, markLabeled: true) { record in
-            if let title = edits.title?.kanNonEmpty { record.title = title }
+            // Typed or picked (even Kan's idea): the user's title for good. The automatic title with
+            // the speakers' new names keeps following new ideas.
+            if let title = edits.title?.kanNonEmpty { Self.setUserTitle(title, of: &record) }
             if let cleanFolder { record.folder = cleanFolder }
             if let cleanTags { record.tags = cleanTags }
             if let notes = edits.notes { record.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -150,6 +156,8 @@ extension AppModel {
 
     func deleteCall(_ id: CallID, deleteAudio: Bool) {
         queue?.cancel(id)
+        // Before the delete, so no answer from OpenAI can arrive in between.
+        cancelAIJobs(for: id, reason: "the call is being deleted")
         let directory = library.callDataDirectory(for: id)
         do {
             try library.delete(id, deleteAudio: deleteAudio)

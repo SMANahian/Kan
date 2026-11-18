@@ -47,8 +47,10 @@ private enum SpeakerPalette {
     static func color(_ index: Int) -> Color { colors[((index % colors.count) + colors.count) % colors.count] }
 }
 
-/// The post-call label panel: title, folder, tags, a one-line note, star, language, transcription
-/// status and — once the transcript is ready — the remote speakers to name.
+/// The post-call label panel: title (with OpenAI's title ideas when that's on), folder, tags, a
+/// one-line note, star, language, transcription status and — once the transcript is ready — the
+/// remote speakers to name. A summary, when that's on, waits until the panel is closed so it uses
+/// those names.
 ///
 /// Keys: Return = Save, ⌘Return = Save & open in the library, Esc = Later, ⌘1…⌘9 = one of the
 /// nine most recent folders. Discard has no shortcut and its confirmation defaults to Cancel: the
@@ -82,7 +84,7 @@ struct LabelPanelView: View {
             titleField
             folderField
             tagsField
-            TextField("What was this about?", text: Binding(get: { draft.notes }, set: { draft.setNotes($0) }))
+            TextField("What was this about?", text: text(.notes))
                 .textFieldStyle(.roundedBorder)
                 .focused($focus, equals: .notes)
             starAndLanguage
@@ -133,19 +135,86 @@ struct LabelPanelView: View {
     }
 
     private var titleField: some View {
-        // Untouched, it shows the suggested title, which follows the names typed for the speakers.
-        TextField("Title", text: Binding(get: { record.map(draft.title(for:)) ?? draft.typedTitle ?? "" },
-                                         set: { draft.setTitle($0) }))
-        .textFieldStyle(.roundedBorder)
-        .font(.title3)
-        .focused($focus, equals: .title)
+        VStack(alignment: .leading, spacing: 5) {
+            // Untouched, it shows the suggested title, which follows the names typed for the
+            // speakers — or the title idea Kan applied.
+            TextField("Title", text: text(.title))
+                .textFieldStyle(.roundedBorder)
+                .font(.title3)
+                .focused($focus, equals: .title)
+            if let record { titleIdeas(record) }
+        }
+    }
+
+    /// A text field's binding. SwiftUI writes a field's text back when it gains or loses focus;
+    /// `LabelDraft.setText` doesn't take that for an edit, so untouched fields keep following
+    /// the stored call.
+    private func text(_ input: LabelDraft.TextInput) -> Binding<String> {
+        Binding(get: { draft.text(of: input, in: record) }, set: { draft.setText($0, of: input, in: record) })
+    }
+
+    /// OpenAI's title ideas as chips (a click fills the title field), what's happening with them,
+    /// or a Suggest titles chip. Nothing without a key, unless the call already has ideas.
+    @ViewBuilder
+    private func titleIdeas(_ record: CallRecord) -> some View {
+        let ideas = record.ai?.titleSuggestions?.titles ?? []
+        let keySaved = model.apiKeyState.isSaved
+        if !ideas.isEmpty {
+            let title = draft.title(for: record)
+            // Wraps: ideas are a few words each, and a long one gets a line of its own.
+            NoticeButtonRow(spacing: 4) {
+                ForEach(ideas, id: \.self) { idea in
+                    Chip(text: idea, hint: nil, selected: title == idea, systemImage: "sparkles") { draft.setTitle(idea) }
+                        .help(idea)
+                }
+            }
+        }
+        switch model.aiJob(.titles, for: callID) {
+        case .running?:
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini)
+                Text(ideas.isEmpty ? "OpenAI is suggesting titles…" : "OpenAI is suggesting new titles…")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        case .failed(let error)?:
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                // Wraps (the panel grows to fit): the end says where to fix it ("…in Settings ›
+                // OpenAI"), and this may be the only place an account problem shows.
+                Text(error.message)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(error.message)
+                Spacer(minLength: 4)
+                if keySaved {
+                    Button("Retry") { model.suggestTitles(callID) }
+                        .controlSize(.small)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        case .waiting?, nil:
+            if ideas.isEmpty && keySaved {
+                if AppModel.hasTranscriptForOpenAI(record) {
+                    Chip(text: "Suggest titles", hint: nil, selected: false, systemImage: "sparkles") {
+                        model.suggestTitles(callID)
+                    }
+                    .help("Ask OpenAI for title ideas from this call's transcript")
+                } else if model.settings.aiSuggestTitles && Self.isTranscribing(record) {
+                    Label("Title ideas appear when the transcript is ready", systemImage: "sparkles")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     private var folderField: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Image(systemName: "folder").foregroundStyle(.secondary)
-                TextField("Inbox", text: Binding(get: { draft.folder }, set: { draft.setFolder($0) }))
+                TextField("Inbox", text: text(.folder))
                     .textFieldStyle(.roundedBorder)
                     .focused($focus, equals: .folder)
                     .onChange(of: draft.folder) { _, _ in folderError = nil }
@@ -315,8 +384,7 @@ struct LabelPanelView: View {
                 .buttonStyle(.borderless)
                 .disabled(sampleSource(for: speaker, in: record) == nil)
                 .help("Play 5 seconds of this speaker")
-                TextField("Name", text: Binding(get: { draft.speakerNames[id] ?? "" },
-                                                set: { draft.setSpeakerName($0, for: id) }))
+                TextField("Name", text: text(.speakerName(id)))
                     .textFieldStyle(.roundedBorder)
                     .focused($focus, equals: .speaker(id))
             }
@@ -494,6 +562,11 @@ struct LabelPanelView: View {
     private static func hasTranscript(_ record: CallRecord) -> Bool {
         !record.segments.isEmpty && (record.status == .ready || record.status == .processing)
     }
+
+    /// A (new) transcript is on its way.
+    private static func isTranscribing(_ record: CallRecord) -> Bool {
+        [.recording, .queued, .processing].contains(record.status)
+    }
 }
 
 /// A keyboard shortcut without a visible control: an invisible button in the hierarchy, active
@@ -516,16 +589,22 @@ private struct HiddenShortcut: View {
     }
 }
 
-/// A small selectable capsule (folder and tag suggestions).
+/// A small selectable capsule (folder, tag and title suggestions).
 private struct Chip: View {
     let text: String
     let hint: String?
     let selected: Bool
+    var systemImage: String?
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 3) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .imageScale(.small)
+                        .foregroundStyle(.secondary)
+                }
                 Text(text).lineLimit(1)
                 if let hint { Text(hint).foregroundStyle(.tertiary) }
             }

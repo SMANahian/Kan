@@ -119,6 +119,154 @@ func modelsTests() -> TestSuite {
         try expectEqual(withNotes.otherPeople, [])
     }
 
+    suite.test("CallSummary: preview is the notes, else the summary's overview, else the transcript") {
+        var record = Fixture.record(notes: "", segments: [Fixture.segment(0, 1, 2, "me", "Hello there")])
+        try expectEqual(CallSummary(record: record).preview, "Hello there")
+        try expectEqual(CallSummary(record: record).hasSummary, false)
+        record.ai = CallInsights(summary: Fixture.summary(overview: "  We planned the\nBangla ASR paper.  "))
+        try expectEqual(CallSummary(record: record).preview, "We planned the Bangla ASR paper.")
+        try expectEqual(CallSummary(record: record).hasSummary, true)
+        record.notes = "My own notes"
+        try expectEqual(CallSummary(record: record).preview, "My own notes")
+        record.ai?.summary = Fixture.summary(overview: " \n ", keyPoints: ["  "])
+        try expectEqual(CallSummary(record: record).hasSummary, false, "a summary without text doesn't count")
+        record.ai = CallInsights(titleSuggestions: AITitleSuggestions(titles: ["Idea"], model: "m", generatedAt: Date(), fingerprint: ""))
+        try expectEqual(CallSummary(record: record).hasSummary, false, "title ideas aren't a summary")
+        record.ai = CallInsights(summary: Fixture.summary(overview: "", actionItems: ["Rahim: share the data"]))
+        try expectEqual(CallSummary(record: record).hasSummary, true, "a list item is enough")
+    }
+
+    suite.test("CallSummary: index.jsonl lines written before summaries existed still decode") {
+        var record = Fixture.record(segments: [Fixture.segment(0, 1, 2, "me", "Hello")])
+        record.ai = CallInsights(summary: Fixture.summary(overview: "We said hello."))
+        let summary = CallSummary(record: record, markdownPath: "Inbox/x.md", jsonPath: "Inbox/x.json")
+        let line = try JSONEncoder.kanCompact.encode(summary)
+        try expectEqual(try JSONDecoder.kan.decode(CallSummary.self, from: line), summary)
+        var object = try expectNotNil(try JSONSerialization.jsonObject(with: line) as? [String: Any])
+        try expectEqual(object["hasSummary"] as? Bool, true)
+        object["hasSummary"] = nil
+        let old = try JSONDecoder.kan.decode(CallSummary.self, from: try JSONSerialization.data(withJSONObject: object))
+        try expectEqual(old.hasSummary, false)
+        var expected = summary
+        expected.hasSummary = false
+        try expectEqual(old, expected, "everything else as written")
+        object["title"] = nil
+        try expectThrows("the other keys are still required") {
+            _ = try JSONDecoder.kan.decode(CallSummary.self, from: try JSONSerialization.data(withJSONObject: object))
+        }
+    }
+
+    suite.test("CallRecord: an ai part this build can't read never makes the call unreadable") {
+        let record = Fixture.record(title: "Lenient", segments: [Fixture.segment(0, 1, 2, "me", "Hello")])
+        let encoded = try JSONEncoder.kanPretty.encode(record)
+        func decode(ai: Any?) throws -> CallRecord {
+            var object = try expectNotNil(try JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            object["ai"] = ai
+            return try JSONDecoder.kan.decode(CallRecord.self, from: try JSONSerialization.data(withJSONObject: object))
+        }
+        try expect(!String(decoding: encoded, as: UTF8.self).contains("\"ai\""), "no key without insights")
+        try expect(try decode(ai: nil).ai == nil)
+        try expect(try decode(ai: NSNull()).ai == nil)
+        // Not an object: the call loads with empty insights (the next save drops them).
+        for junk in ["a summary", 42, true, [1, 2], ["summary"]] as [Any] {
+            let decoded = try decode(ai: junk)
+            try expectEqual(decoded.id, record.id, "\(junk)")
+            try expectEqual(decoded.segments, record.segments, "\(junk)")
+            try expect(decoded.ai?.isEmpty ?? true, "\(junk)")
+        }
+        // Parts of the wrong type, or without their required field, are left out one by one.
+        let wrongParts = try decode(ai: ["summary": "text", "titleSuggestions": 5, "appliedTitle": ["x"], "future": ["y": 1]] as [String: Any])
+        try expect(wrongParts.ai?.isEmpty == true)
+        let missing = try decode(ai: ["summary": ["keyPoints": ["x"]], "titleSuggestions": ["model": "m"], "appliedTitle": "Kept"] as [String: Any])
+        try expect(missing.ai?.summary == nil && missing.ai?.titleSuggestions == nil)
+        try expectEqual(missing.ai?.appliedTitle, "Kept")
+        // Inside a readable part, an unreadable field takes its default.
+        let lenient = try decode(ai: [
+            "summary": ["overview": "Fine", "keyPoints": "not a list", "ideas": [1, 2], "decisions": ["Ship it"],
+                        "language": "klingon", "generatedAt": "soon", "shortened": "yes", "model": 5, "fingerprint": NSNull()] as [String: Any],
+            "titleSuggestions": ["titles": ["A good title"], "generatedAt": "never", "model": ["x"]] as [String: Any],
+        ])
+        let summary = try expectNotNil(lenient.ai?.summary)
+        try expectEqual(summary.overview, "Fine")
+        try expectEqual(summary.keyPoints, [])
+        try expectEqual(summary.ideas, [])
+        try expectEqual(summary.decisions, ["Ship it"])
+        try expectEqual(summary.language, .english)
+        try expectEqual(summary.generatedAt, .distantPast)
+        try expectEqual(summary.shortened, false)
+        try expectEqual(summary.model, "")
+        try expectEqual(summary.fingerprint, "")
+        try expectEqual(lenient.ai?.titleSuggestions?.titles, ["A good title"])
+        try expectEqual(lenient.ai?.titleSuggestions?.model, "")
+        try expectEqual(lenient.ai?.titleSuggestions?.generatedAt, .distantPast)
+        try expectEqual(lenient.ai?.appliedTitle, nil)
+
+        // Everything Kan writes comes back as it was.
+        var full = record
+        let written = Fixture.date("2026-11-17T09:30:00-05:00")
+        full.ai = CallInsights(
+            titleSuggestions: AITitleSuggestions(titles: ["One", "Two"], model: "gpt-6.1-terra", generatedAt: written, fingerprint: "00ff"),
+            summary: AISummary(overview: "O", keyPoints: ["k"], ideas: ["i"], decisions: ["d"], actionItems: ["a"],
+                               openQuestions: ["q"], language: .bangla, model: "gpt-6-luna", generatedAt: written,
+                               fingerprint: "abcd", shortened: true),
+            appliedTitle: "One")
+        try expectEqual(try JSONDecoder.kan.decode(CallRecord.self, from: try JSONEncoder.kanPretty.encode(full)).ai, full.ai)
+    }
+
+    suite.test("fingerprint: only the transcript's lines and speaker names count") {
+        let record = Fixture.record(title: "Fingerprint", speakers: Fixture.speakers(others: ["Speaker 1"]), segments: [
+            Fixture.segment(0, 1, 2, "me", "Hello"),
+            Fixture.segment(1, 3, 4, "s1", "আমরা বাংলা ভাষার জন্য", language: "bn"),
+            Fixture.segment(2, 5, 6, "me", "Hello (echo)", flags: [.echoSuspect]),
+        ])
+        let original = CallInsights.fingerprint(of: record)
+        try expectEqual(original.count, 16)
+        try expect(original.allSatisfy(\.isHexDigit), original)
+
+        // What Kan stores next to the transcript, and the call's state, leave it alone.
+        var labeled = record
+        labeled.ai = CallInsights(
+            titleSuggestions: AITitleSuggestions(titles: ["Bangla ASR"], model: "m", generatedAt: Date(), fingerprint: original),
+            summary: Fixture.summary(overview: "We said hello.", keyPoints: ["Hello"], fingerprint: original),
+            appliedTitle: "Bangla ASR")
+        labeled.title = "Bangla ASR"
+        labeled.notes = "My notes"
+        labeled.tags = ["asr"]
+        labeled.bookmarks = [Bookmark(time: 1, note: "here")]
+        labeled.folder = "Research"
+        labeled.starred = true
+        labeled.labeled = true
+        try expectEqual(CallInsights.fingerprint(of: labeled), original)
+        try expect(!labeled.isSummaryOutdated && !labeled.areTitleIdeasOutdated)
+        // Being transcribed again, or a failed attempt, still shows the same lines.
+        labeled.status = .processing
+        try expectEqual(CallInsights.fingerprint(of: labeled), original)
+        labeled.status = .failed
+        labeled.processing = ProcessingInfo(error: "Model not installed: large-v3")
+        try expectEqual(CallInsights.fingerprint(of: labeled), original)
+        try expect(TranscriptRenderer.plainText(labeled).contains("We said hello."), "the summary is in the plain text")
+        // Stored and read back (NFC, normalized) it is still the same.
+        let lib = TestLibrary("fingerprint")
+        try lib.store.save(labeled)
+        try expectEqual(CallInsights.fingerprint(of: try lib.reopened().record(labeled.id)), original)
+
+        // The words or the names change it.
+        var renamed = record
+        renamed.speakers[1].name = "Rahim"
+        try expect(CallInsights.fingerprint(of: renamed) != original, "a speaker renamed")
+        var edited = record
+        edited.segments[1].text = "আমরা বাংলা ভাষার জন্যই"
+        try expect(CallInsights.fingerprint(of: edited) != original, "a line edited")
+        var added = record
+        added.segments.append(Fixture.segment(3, 9, 10, "s1", "More"))
+        try expect(CallInsights.fingerprint(of: added) != original, "a new transcript")
+        var unflagged = record
+        unflagged.segments[2].flags = []
+        try expect(CallInsights.fingerprint(of: unflagged) != original, "an echo suspect shown again")
+        labeled.speakers[1].name = "Rahim"
+        try expect(labeled.isSummaryOutdated && labeled.areTitleIdeasOutdated)
+    }
+
     suite.test("CallID: only ULIDs decode (any case, stored uppercase)") {
         let id = CallID.generate()
         try expect(id.isWellFormed)
