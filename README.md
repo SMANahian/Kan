@@ -39,8 +39,8 @@ the meeting, and the other people get no notice from Kan. Telling them is up to 
   also goes to OpenAI. Tell people that too.
 
 Kan is provided as is, without warranty of any kind, and its authors aren't liable for how it's
-used. You, the person recording, are responsible for complying with the law where you and the
-people you record are. This is not legal advice.
+used (see the [license](#license)). You, the person recording, are responsible for complying with
+the law where you and the people you record are. This is not legal advice.
 
 ## Requirements
 
@@ -570,3 +570,16 @@ make clean                                       # swift package clean + build/
   tells you whether `Vendor/whisper/lib` is current; add `--force` to rebuild.
 - **App icon**: `make icon` re-renders `Resources/AppIcon.icns` from `scripts/make-icon.swift`;
   commit the result.
+
+## License
+
+Kan is licensed under the [Apache License 2.0](LICENSE): you may use, change and share it under
+its terms. It comes "as is", without warranty of any kind, and its authors aren't liable for any
+damages from using it (sections 7 and 8 of the license). Recording calls lawfully is up to the
+person recording: see [Ask before you record](#ask-before-you-record).
+
+Copyright 2026 S M A Nahian.
+
+Kan builds on [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) and
+[FluidAudio](https://github.com/FluidInference/FluidAudio) (Apache 2.0). The models that
+`make models` downloads come under their own licenses; see each model's page.
